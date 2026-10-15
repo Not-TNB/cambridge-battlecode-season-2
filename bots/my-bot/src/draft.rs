@@ -112,6 +112,5 @@ pub fn play() -> Result<()> {
         }
     }
 
-    
     cambc::draft::pick(filtered_champs[crate::random_number(filtered_champs.len() as u32) as usize])
 }

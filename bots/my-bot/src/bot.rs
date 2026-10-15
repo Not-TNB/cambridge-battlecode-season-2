@@ -1,7 +1,8 @@
 // Champion decisions. main.rs dispatches here after the draft.
 use cambc::{
-    Bitboard, Champion, ChampionType, DistanceField, ItemType as Item, Result, Team, Unit, Vec2,
+    Bitboard, CampGroup, Champion, ChampionType, DistanceField, ItemType as Item, Result, Team, Unit, Vec2,
 };
+use std::cell::OnceCell;
 
 fn me() -> Result<&'static Champion> {
     Ok(cambc::self_champion()?.expect("play starts after the draft"))
@@ -15,6 +16,17 @@ fn tiles_around(position: Vec2, radius: i32) -> Result<Bitboard> {
     let mut tiles = Bitboard::new()?;
     tiles.draw_chebyshev(position, radius as f32)?;
     Ok(tiles)
+}
+
+// Camp group membership never changes, so load it from the host once per champion.
+fn camp_groups() -> Result<&'static [CampGroup]> {
+    thread_local! {
+        static GROUPS: OnceCell<&'static [CampGroup]> = const { OnceCell::new() };
+    }
+    if let Some(groups) = GROUPS.with(|cell| cell.get().copied()) { return Ok(groups); }
+    let groups: &'static [CampGroup] = Vec::leak(cambc::map::camp_groups()?);
+    GROUPS.with(|cell| { let _ = cell.set(groups); });
+    Ok(groups)
 }
 
 fn blocked_tiles() -> Result<Bitboard> {
@@ -68,12 +80,16 @@ fn farm_camps() -> Result<()> {
         if attack_if_in_range(&camp)? { return Ok(()); }
     }
 
+    // Set goal bits directly: each new Bitboard costs ~2k fuel in the Rust SDK.
     let mut goals = Bitboard::new()?;
     let visible = cambc::vision::visible_tiles()?;
-    for group in cambc::map::camp_groups()? {
-        if !group.spawn_tiles()?.intersect(&visible)?.is_empty()?
-            && matches!(group.state()?, cambc::CampGroupState::Respawning(_)) { continue; }
-        goals.union_assign(&group.spawn_tiles()?)?;
+    for group in camp_groups()? {
+        let mut seen = false;
+        for camp in group.camps() {
+            if visible.is_set(camp.spawn_position())? { seen = true; break; }
+        }
+        if seen && matches!(group.state()?, cambc::CampGroupState::Respawning(_)) { continue; }
+        for camp in group.camps() { goals.set(camp.spawn_position(), true)?; }
     }
 
     if move_towards_closest(goals)? {
@@ -144,7 +160,7 @@ impl Bot {
                 if cambc::vision::has_altar_lock(altar)? { continue; }
                 let range = cambc::constants().submit_gems_range;
                 if distance(me.position()?, altar) <= range { me.submit_gems(altar)?; return Ok(()); }
-                goals.union_assign(&tiles_around(altar, range)?)?;
+                goals.draw_chebyshev(altar, range as f32)?;
             }
             move_towards_closest(goals)?;
             return Ok(());
