@@ -126,6 +126,68 @@ pub fn fight_enemies() -> Result<bool> {
     Ok(attacked.is_some())
 }
 
+// Expected damage our champion would take standing on `tile` for one turn, from what we can see:
+// awake camps within their attack range, plus enemy champions that can hit the tile without moving.
+// Upper-bound estimate: every threat is assumed to target us, using raw Strength for attacks.
+// Costs ~7k fuel per call (max ~16k seen), so avoid calling it for many tiles in one turn.
+#[allow(dead_code)] // not called by any champion yet
+pub fn expected_dmg(tile: Vec2) -> Result<f32> {
+    Ok(camp_dmg(tile)? + enemy_dmg(tile)?)
+}
+
+// Awake camps attack once per round; camps never move, so a live camp sits on its spawn tile.
+// There is no "awake" query: a group counts as awake once a visible member is damaged or missing
+// (dead). Groups that went back to sleep after two quiet rounds are still counted, overestimating.
+fn camp_dmg(tile: Vec2) -> Result<f32> {
+    let live_camps = cambc::vision::camp_tiles()?;
+    let visible = cambc::vision::visible_tiles()?;
+    let mut damage = 0.0;
+    for group in camp_groups()? {
+        let mut in_range = Vec::new();
+        let mut awake = false;
+        for camp in group.camps() {
+            let spawn = camp.spawn_position();
+            if !visible.is_set(spawn)? { continue; }
+            if !live_camps.is_set(spawn)? { awake = true; continue; }
+            if camp.health()? < camp.max_health()? { awake = true; }
+            if distance(spawn, tile) <= camp.attack_range()? { in_range.push(camp); }
+        }
+        if !awake { continue; }
+        for camp in in_range { damage += camp.strength()?; }
+    }
+    Ok(damage)
+}
+
+// An enemy can basic-attack the tile if it is within attack range, and can make one cast per turn:
+// either its strongest ready damaging ability in range, or an attack reset for a second basic attack.
+fn enemy_dmg(tile: Vec2) -> Result<f32> {
+    let me = me()?;
+    let mut damage = 0.0;
+    for enemy in cambc::vision::champions(Some(Team::Enemy))? {
+        let gap = distance(enemy.position()?, tile);
+        let can_hit = gap <= enemy.attack_range()?;
+        let strength = enemy.strength()?;
+        let mut best_cast: f32 = 0.0;
+        for ability in enemy.abilities() {
+            // Assume ready if the cooldown can't be read.
+            if ability.is_on_cooldown().unwrap_or(false) { continue; }
+            if ability.is_attack_reset() {
+                if can_hit { best_cast = best_cast.max(strength); }
+            } else if is_damaging(ability) {
+                let Some(info) = ability.info()? else { continue };
+                if gap as f32 <= info.as_dyn().range()? {
+                    // Engine prediction includes our mitigation and shields; fall back to raw damage.
+                    let hit = ability.damage_amount_against(me).or_else(|_| ability.damage_amount())?;
+                    best_cast = best_cast.max(hit);
+                }
+            }
+        }
+        if can_hit { damage += strength; }
+        damage += best_cast;
+    }
+    Ok(damage)
+}
+
 // Tribute at an altar in range, otherwise walk toward the nearest unlocked altar.
 pub fn bank_gems() -> Result<()> {
     let me = me()?;

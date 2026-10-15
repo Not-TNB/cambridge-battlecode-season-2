@@ -89,6 +89,29 @@ Every champion is tagged with a class in `constants.rs`:
 - **Change:** split the single `bot.rs` into the turn skeleton (`bot.rs`), shared helpers (`common.rs`) and one file per champion under `champions/`. Each file implements `ChampionAi`, which has hooks for `shops_anywhere`, `fight`, `bank_gems` and `farm`, with shared defaults. Only Tavi overrides anything so far.
 - **Verification:** this was a pure refactor. All 18 matches vs `starter-rust` (9 maps, both sides) gave the same winner on the same round before and after, with 0 errors. Matches are deterministic, so any change in behaviour would have shown up.
 
+## 8. `expected_dmg(tile)`: damage estimate for a tile
+**Uncommitted.** Not called by any champion yet.
+
+- **What it does:** `common::expected_dmg(tile)` estimates the damage our champion would take standing on `tile` for one turn. It adds up:
+  - **Camps** (`camp_dmg`): the live Strength of every visible awake camp whose attack range (3) covers the tile. The SDK has no "awake" query, so a group counts as awake once a visible member is damaged or missing (dead). Camps never move, so a live camp is always on its spawn tile.
+  - **Enemy champions** (`enemy_dmg`): one basic attack if the tile is within the enemy's attack range, plus its best single cast, since only one is allowed per turn. That cast is either its strongest ready damaging ability in range, using the engine's `damage_amount_against(me)` prediction, or an attack reset giving a second basic attack.
+- **Assumptions:** it's an upper bound. Every threat is assumed to target us, basic attacks use raw Strength (no mitigation), enemies are not assumed to move before attacking, and only visible units count.
+- **Accuracy:** 9 maps, 800 rounds, vs `starter-rust`, about 19.5k turns. The prediction for the end-of-turn tile was compared with the health actually lost before the next turn:
+
+  | Outcome | Turns |
+  |---|---|
+  | No damage predicted, none taken | 12,734 |
+  | Damage taken and predicted | 4,076 (3,648 exact, 427 over, 1 under) |
+  | Damage predicted, none taken | 2,697 (2,176 camp only, 499 enemy only, 22 both) |
+  | Damage taken, none predicted | 30 (mostly 45–65 hp, i.e. single basic attacks) |
+
+- **Cost:** about 7k fuel per call on average, 16k at most.
+- **Open questions / follow-ups:**
+  - Most false alarms come from camps. Likely causes, not yet verified: groups that went back to sleep after two quiet rounds while still damaged or missing members, and camps attacking a different champion in range.
+  - Tracking each group's awake/asleep state across turns could fix this.
+  - The 30 misses look like enemies stepping into range and attacking. Adding melee move-then-attack reach would catch them, but would add false alarms.
+  - Enemy false alarms are expected against the starter, which never casts abilities.
+
 ---
 
 ## Testing recipes
