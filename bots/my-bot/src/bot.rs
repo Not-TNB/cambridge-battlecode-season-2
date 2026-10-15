@@ -1,110 +1,15 @@
-// Champion decisions. main.rs dispatches here after the draft.
-use cambc::{
-    Bitboard, CampGroup, Champion, ChampionType, DistanceField, ItemType as Item, Result, Team, Unit, Vec2,
-};
-use std::cell::OnceCell;
-
-fn me() -> Result<&'static Champion> {
-    Ok(cambc::self_champion()?.expect("play starts after the draft"))
-}
-
-fn distance(a: Vec2, b: Vec2) -> i32 {
-    a.chebyshev_distance(b) as i32
-}
-
-fn tiles_around(position: Vec2, radius: i32) -> Result<Bitboard> {
-    let mut tiles = Bitboard::new()?;
-    tiles.draw_chebyshev(position, radius as f32)?;
-    Ok(tiles)
-}
-
-// Camp group membership never changes, so load it from the host once per champion.
-fn camp_groups() -> Result<&'static [CampGroup]> {
-    thread_local! {
-        static GROUPS: OnceCell<&'static [CampGroup]> = const { OnceCell::new() };
-    }
-    if let Some(groups) = GROUPS.with(|cell| cell.get().copied()) { return Ok(groups); }
-    let groups: &'static [CampGroup] = Vec::leak(cambc::map::camp_groups()?);
-    GROUPS.with(|cell| { let _ = cell.set(groups); });
-    Ok(groups)
-}
-
-fn blocked_tiles() -> Result<Bitboard> {
-    // Combine terrain and visible occupants using native bitboard operations.
-    let mut blocked = cambc::map::walls()?.clone();
-    for mask in [cambc::map::holes()?.clone(), cambc::map::altars()?.clone(),
-        cambc::map::spawn_region(Team::Enemy)?.clone(), cambc::vision::champion_tiles(None)?,
-        cambc::vision::camp_tiles()?, cambc::vision::teleport_tiles()?] {
-        blocked.union_assign(&mask)?;
-    }
-    blocked.set(me()?.position()?, false)?;
-    Ok(blocked)
-}
-
-fn move_towards_closest(mut goals: Bitboard) -> Result<bool> {
-    let me = me()?;
-    let origin = me.position()?;
-    if !me.can_move()? || goals.is_set(origin)? { return Ok(false); }
-
-    let blocked = blocked_tiles()?;
-    goals.intersect_assign(&blocked.complement()?.union(&cambc::vision::camp_tiles()?)?)?;
-    if goals.is_empty()? { return Ok(false); }
-    if goals.count()? == 1 && !blocked.is_set(goals.positions()?[0])? {
-        return me.move_towards(goals.positions()?[0]);
-    }
-
-    let mut field = DistanceField::new()?;
-    field.compute_to(&blocked.intersect(&goals.complement()?)?, &goals, &tiles_around(origin, 0)?, &mut Bitboard::new()?, DistanceField::UNREACHABLE)?;
-
-    let mut step = origin;
-    for tile in blocked.reachable_tiles(origin, me.base_stats()?.base_move_speed as u16)?.positions()? {
-        if field.get(tile)? < field.get(step)? { step = tile; }
-    }
-    if step == origin { Ok(false) } else { me.move_absolute(step) }
-}
-
-// Make one basic attack if the target is already in attack range.
-fn attack_if_in_range(target: &Unit) -> Result<bool> {
-    let me = me()?;
-    if !me.can_attack()? || !target.is_visible()? || target.health()? <= 0.0
-        || !me.attack_tiles()?.is_set(target.position()?)? {
-        return Ok(false);
-    }
-    me.attack(target)?;
-    Ok(true)
-}
-
-fn farm_camps() -> Result<()> {
-    // Attack a camp already in range, otherwise move toward the nearest camp tiles.
-    for camp in cambc::vision::camps()? {
-        if attack_if_in_range(&camp)? { return Ok(()); }
-    }
-
-    // Set goal bits directly: each new Bitboard costs ~2k fuel in the Rust SDK.
-    let mut goals = Bitboard::new()?;
-    let visible = cambc::vision::visible_tiles()?;
-    for group in camp_groups()? {
-        let mut seen = false;
-        for camp in group.camps() {
-            if visible.is_set(camp.spawn_position())? { seen = true; break; }
-        }
-        if seen && matches!(group.state()?, cambc::CampGroupState::Respawning(_)) { continue; }
-        for camp in group.camps() { goals.set(camp.spawn_position(), true)?; }
-    }
-
-    if move_towards_closest(goals)? {
-        for camp in cambc::vision::camps()? {
-            if attack_if_in_range(&camp)? { return Ok(()); }
-        }
-    }
-    Ok(())
-}
+// Turn skeleton shared by every champion. main.rs dispatches here after the draft; champion-specific
+// decisions live in champions/<name>.rs and shared helpers in common.rs.
+use crate::champions::{self, ChampionAi};
+use crate::common::me;
+use cambc::{ItemType as Item, Result, Team};
 
 // Per-champion state survives between turns. Pick one stat and keep buying it.
 #[derive(Default)]
 pub struct Bot {
     chosen_stat: Option<usize>,
-    was_recalling: bool
+    was_recalling: bool,
+    ai: Option<Box<dyn ChampionAi>>,
 }
 
 impl Bot {
@@ -118,6 +23,17 @@ impl Bot {
     }
 
     pub fn play_turn(&mut self) -> Result<()> {
+        if self.ai.is_none() {
+            self.ai = Some(champions::for_champion(me()?.champion_name()?));
+        }
+        // Take the AI out for the turn so it and the shared state can both be borrowed mutably.
+        let mut ai = self.ai.take().expect("set above");
+        let result = self.turn(ai.as_mut());
+        self.ai = Some(ai);
+        result
+    }
+
+    fn turn(&mut self, ai: &mut dyn ChampionAi) -> Result<()> {
         if self.chosen_stat.is_none() {
             self.chosen_stat = Some(crate::random_number(3) as usize);
             println!("draft: {}", String::from_utf8_lossy(&cambc::draft_memory().bytes()[..11]));
@@ -130,12 +46,12 @@ impl Bot {
 
         let me = me()?;
 
-        // Priorities: shop and recall, attack enemies in range, bank gems, then farm.
+        // Priorities: shop and recall, fight enemies, bank gems, then farm.
         if !me.is_alive()? || me.is_recalling()? || me.is_submitting_gems()? || me.is_teleporting()?
             || (!me.can_move()? && !me.can_attack()?) { self.was_recalling = true; return Ok(()); }
 
         let at_spawn = cambc::map::spawn_region(Team::Ally)?.is_set(me.position()?)?;
-        if at_spawn || me.champion_name()? == ChampionType::Tavi { self.buy_items()?; }
+        if at_spawn || ai.shops_anywhere() { self.buy_items()?; }
 
         if self.was_recalling && !me.is_recalling()? {
             self.was_recalling = false;
@@ -149,26 +65,15 @@ impl Bot {
             return Ok(());
         }
 
-        for enemy in cambc::vision::champions(Some(Team::Enemy))? {
-            if attack_if_in_range(&enemy)? { return Ok(()); }
-        }
+        if ai.fight()? { return Ok(()); }
 
         if me.gem_count()? > 0 {
-            // Union all altar approach tiles: the field chooses the nearest reachable altar.
-            let mut goals = Bitboard::new()?;
-            for altar in cambc::map::altars()?.positions()? {
-                if cambc::vision::has_altar_lock(altar)? { continue; }
-                let range = cambc::constants().submit_gems_range;
-                if distance(me.position()?, altar) <= range { me.submit_gems(altar)?; return Ok(()); }
-                goals.draw_chebyshev(altar, range as f32)?;
-            }
-            move_towards_closest(goals)?;
+            ai.bank_gems()?;
             return Ok(());
         }
 
-        farm_camps()?;
+        ai.farm()?;
 
         cambc::self_champion()?.expect("gameplay champion").set_priority(1 + crate::random_number(100) as i32)
     }
 }
-

@@ -1,6 +1,8 @@
 // Dispatch draft and gameplay. Rust propagates SDK errors explicitly.
 mod draft;
 mod bot;
+mod champions;
+mod common;
 mod constants;
 use std::cell::Cell;
 
@@ -10,10 +12,12 @@ thread_local! {
 
 // WASI randomness is always zero in matches, so seed from our spawn and this champion's start.
 fn random_seed() -> u64 {
+    // Fixed per build: change it (or run scripts/reseed.sh) to change this bot's random choices.
+    const SEED: u64 = 0x72bffdb2db81887f;
     let spawn = cambc::map::spawn_region(cambc::Team::Ally).ok().and_then(|region| region.positions().ok()?.first().copied());
     let start = cambc::self_champion().ok().flatten().and_then(|me| me.position().ok());
     [spawn, start].into_iter().flatten()
-        .fold(0u64, |seed, p| seed.wrapping_mul(1_000_003).wrapping_add((p.x as u64) << 16 | p.y as u64))
+        .fold(SEED, |seed, p| seed.wrapping_mul(1_000_003).wrapping_add((p.x as u64) << 16 | p.y as u64))
 }
 
 fn random_number(limit: u32) -> u32 {

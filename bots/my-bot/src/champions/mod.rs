@@ -1,0 +1,49 @@
+// One file per champion. Each implements `ChampionAi`, overriding only the decisions where
+// its kit should play differently; everything else falls back to the shared logic in common.rs.
+use cambc::{ChampionType, Result};
+
+mod cassi;
+mod issac;
+mod marcella;
+mod prism;
+mod ren;
+mod ryth;
+mod stellar;
+mod tavi;
+mod varg;
+mod vendetta;
+mod vesper_vale;
+mod willow;
+
+// Decision points bot.rs calls each turn, in priority order: shop, fight, bank gems, farm.
+pub trait ChampionAi {
+    // Whether this champion may buy items away from its spawn.
+    fn shops_anywhere(&self) -> bool { false }
+
+    // Act against visible enemy champions; return true if that used up the turn.
+    fn fight(&mut self) -> Result<bool> { crate::common::fight_enemies() }
+
+    // Carry gems to an altar and tribute them.
+    fn bank_gems(&mut self) -> Result<()> { crate::common::bank_gems() }
+
+    // Clear camps and capture their rewards.
+    fn farm(&mut self) -> Result<()> { crate::common::farm_camps() }
+}
+
+// Build the per-champion AI for the champion this program instance controls.
+pub fn for_champion(champion: ChampionType) -> Box<dyn ChampionAi> {
+    match champion {
+        ChampionType::Cassi => Box::new(cassi::Cassi::default()),
+        ChampionType::Issac => Box::new(issac::Issac::default()),
+        ChampionType::Marcella => Box::new(marcella::Marcella::default()),
+        ChampionType::Prism => Box::new(prism::Prism::default()),
+        ChampionType::Ren => Box::new(ren::Ren::default()),
+        ChampionType::Ryth => Box::new(ryth::Ryth::default()),
+        ChampionType::Stellar => Box::new(stellar::Stellar::default()),
+        ChampionType::Tavi => Box::new(tavi::Tavi::default()),
+        ChampionType::Varg => Box::new(varg::Varg::default()),
+        ChampionType::Vendetta => Box::new(vendetta::Vendetta::default()),
+        ChampionType::VesperVale => Box::new(vesper_vale::VesperVale::default()),
+        ChampionType::Willow => Box::new(willow::Willow::default()),
+    }
+}
