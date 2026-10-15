@@ -5,3 +5,5 @@ replays/
 bots/*/build/
 bots/*/target/
 .idea/
+sdk/rust/Cargo.lock
+sdk/rust/target/
