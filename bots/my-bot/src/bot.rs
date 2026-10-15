@@ -1,7 +1,6 @@
 // Champion decisions. main.rs dispatches here after the draft.
 use cambc::{
-    Bitboard, Champion,
-    DistanceField, ItemType as Item, Result, Team, Unit, Vec2,
+    Bitboard, Champion, ChampionType, DistanceField, ItemType as Item, Result, Team, Unit, Vec2,
 };
 
 fn me() -> Result<&'static Champion> {
@@ -89,6 +88,7 @@ fn farm_camps() -> Result<()> {
 #[derive(Default)]
 pub struct Bot {
     chosen_stat: Option<usize>,
+    was_recalling: bool
 }
 
 impl Bot {
@@ -112,13 +112,21 @@ impl Bot {
         println!("shared round: {}", u32::from_le_bytes(bytes));
         cambc::shared_memory().write(0, &cambc::round_number()?.to_le_bytes())?;
 
-        // Priorities: shop and recall, attack enemies in range, bank gems, then farm.
         let me = me()?;
+
+        // Priorities: shop and recall, attack enemies in range, bank gems, then farm.
         if !me.is_alive()? || me.is_recalling()? || me.is_submitting_gems()? || me.is_teleporting()?
-            || (!me.can_move()? && !me.can_attack()?) { return Ok(()); }
+            || (!me.can_move()? && !me.can_attack()?) { self.was_recalling = true; return Ok(()); }
 
         let at_spawn = cambc::map::spawn_region(Team::Ally)?.is_set(me.position()?)?;
-        if at_spawn { self.buy_items()?; }
+        if at_spawn || me.champion_name()? == ChampionType::Tavi { self.buy_items()?; }
+
+        if self.was_recalling && !me.is_recalling()? {
+            self.was_recalling = false;
+            if at_spawn {
+                return Ok(());
+            }
+        }
 
         if !at_spawn && me.health()? < me.max_health()? * 0.35 {
             me.recall()?;
