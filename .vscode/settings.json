@@ -1,0 +1,8 @@
+{
+    "cmake.sourceDirectory": "C:/Users/guanc/Documents/Imperial/Coding Projects/cambridge-battlecode-season-2/cmake",
+
+    "rust-analyzer.linkedProjects": [
+        "C:/Users/guanc/Documents/Imperial/Coding Projects/cambridge-battlecode-season-2/bots/starter-rust/Cargo.toml",
+        "C:/Users/guanc/Documents/Imperial/Coding Projects/cambridge-battlecode-season-2/bots/my-bot/Cargo.toml"
+    ]
+}
