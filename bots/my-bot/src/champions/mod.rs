@@ -23,6 +23,9 @@ pub trait ChampionAi {
     // Act against visible enemy champions; return true if that used up the turn.
     fn fight(&mut self) -> Result<bool> { crate::common::fight_enemies() }
 
+    // Whether to head for an altar now rather than keep farming with the gems we carry.
+    fn should_bank(&self) -> Result<bool> { crate::common::should_bank() }
+
     // Carry gems to an altar and tribute them.
     fn bank_gems(&mut self) -> Result<()> { crate::common::bank_gems() }
 

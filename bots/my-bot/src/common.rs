@@ -66,8 +66,9 @@ pub fn move_towards_closest(mut goals: Bitboard) -> Result<bool> {
 // Make one basic attack if the target is already in attack range.
 pub fn attack_if_in_range(target: &Unit) -> Result<bool> {
     let me = me()?;
+    // Distance check instead of me.attack_tiles(), which builds a ~2k-fuel bitboard per call.
     if !me.can_attack()? || !target.is_visible()? || target.health()? <= 0.0
-        || !me.attack_tiles()?.is_set(target.position()?)? {
+        || distance(me.position()?, target.position()?) > me.attack_range()? {
         return Ok(false);
     }
     me.attack(target)?;
@@ -413,28 +414,97 @@ pub fn bank_gems() -> Result<()> {
     Ok(())
 }
 
-pub fn farm_camps() -> Result<()> {
-    // Attack a camp already in range, otherwise move toward the nearest camp tiles.
-    for camp in cambc::vision::camps()? {
-        if attack_if_in_range(&camp)? { return Ok(()); }
-    }
+// Bank whenever we carry gems (holding them back tested neutral to worse; writeup entry 11).
+pub fn should_bank() -> Result<bool> {
+    Ok(me()?.gem_count()? > 0)
+}
 
+// "Willingness to go back to base": recall to shop and heal once this reaches 1. It grows with
+// unspent gold (in emblems' worth, 150 gold), missing health, and rounds since we were last on
+// our spawn. Champions that can shop anywhere (Tavi) get no pull from gold. Weights tuned against
+// old-bot over 180 games (writeup entry 12).
+pub const BASE_W_GOLD: f32 = 1.5;
+pub const BASE_W_MISSING_HP: f32 = 0.5;
+pub const BASE_W_ROUNDS_AWAY: f32 = 0.004; // per round away from spawn
+
+pub fn base_willingness(shops_anywhere: bool, rounds_away: u32) -> Result<f32> {
+    let me = me()?;
+    let gold = if shops_anywhere { 0.0 } else { me.gold_count()? as f32 / 150.0 };
+    let missing_hp = 1.0 - me.health()? / me.max_health()?.max(1.0);
+    Ok(BASE_W_GOLD * gold + BASE_W_MISSING_HP * missing_hp + BASE_W_ROUNDS_AWAY * rounds_away as f32)
+}
+
+// A tank leaves a cleared camp group's capture to an AD carry ally whose attack range covers it:
+// capture rewards are split between every ally on the region, so the carry gets all of it.
+const TANK_FUNNEL: bool = true;
+
+// Attack a camp already in range (camps never move, so their spawn tile is their position).
+fn attack_camp_in_range() -> Result<bool> {
+    let me = me()?;
+    if !me.can_attack()? { return Ok(false); }
+    let (position, range) = (me.position()?, me.attack_range()?);
+    for camp in cambc::vision::camps()? {
+        if distance(camp.spawn_position(), position) <= range && attack_if_in_range(&camp)? { return Ok(true); }
+    }
+    Ok(false)
+}
+
+// Whether an AD carry ally (not us) has any of `group`'s capture tiles within its attack range.
+fn carry_covers(group: &CampGroup) -> Result<bool> {
+    let my_position = me()?.position()?;
+    for ally in cambc::vision::champions(Some(Team::Ally))? {
+        let position = ally.position()?;
+        if position == my_position || !crate::constants::class_of(ally.champion_name()?).is_ad_carry() { continue; }
+        let range = ally.attack_range()?;
+        if group.camps().iter().any(|c| distance(c.spawn_position(), position) <= range) { return Ok(true); }
+    }
+    Ok(false)
+}
+
+// Round each camp group (indexed as in camp_groups()) is expected back after we last saw it
+// respawning. Without this, a respawning group only counts as respawning while in sight, so a
+// champion at the edge of vision steps away, loses sight, steps back, and oscillates.
+thread_local! {
+    static RESPAWN_READY: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+// Farm the nearest camps that aren't respawning (including ones we saw respawning earlier). Tanks still fight camps but leave the capture
+// of a cleared group to a covering AD carry (see TANK_FUNNEL).
+pub fn farm_camps() -> Result<()> {
+    if attack_camp_in_range()? { return Ok(()); }
+
+    let is_tank = TANK_FUNNEL && crate::constants::class_of(me()?.champion_name()?) == crate::constants::ClassKind::Tank;
     // Set goal bits directly: each new Bitboard costs ~2k fuel in the Rust SDK.
     let mut goals = Bitboard::new()?;
     let visible = cambc::vision::visible_tiles()?;
-    for group in camp_groups()? {
+    let live_camps = cambc::vision::camp_tiles()?;
+    let round = cambc::round_number()?;
+    let groups = camp_groups()?;
+    let mut ready = RESPAWN_READY.with(|cell| cell.take());
+    ready.resize(groups.len(), 0);
+    for (index, group) in groups.iter().enumerate() {
         let mut seen = false;
+        let mut any_live = false;
         for camp in group.camps() {
-            if visible.is_set(camp.spawn_position())? { seen = true; break; }
+            let spawn = camp.spawn_position();
+            if !visible.is_set(spawn)? { continue; }
+            seen = true;
+            if live_camps.is_set(spawn)? { any_live = true; break; }
         }
-        if seen && matches!(group.state()?, cambc::CampGroupState::Respawning(_)) { continue; }
+        if any_live { ready[index] = 0; }
+        if round < ready[index] { continue; } // seen respawning earlier, not back yet
+        // Only a seen group with no live camps can be respawning or waiting for capture.
+        if seen && !any_live {
+            match group.state()? {
+                cambc::CampGroupState::Respawning(timer) => { ready[index] = round + timer.max(0) as u32; continue }
+                cambc::CampGroupState::RewardAvailable if is_tank && carry_covers(group)? => continue,
+                _ => {}
+            }
+        }
         for camp in group.camps() { goals.set(camp.spawn_position(), true)?; }
     }
+    RESPAWN_READY.with(|cell| cell.replace(ready));
 
-    if move_towards_closest(goals)? {
-        for camp in cambc::vision::camps()? {
-            if attack_if_in_range(&camp)? { return Ok(()); }
-        }
-    }
+    if move_towards_closest(goals)? { attack_camp_in_range()?; }
     Ok(())
 }

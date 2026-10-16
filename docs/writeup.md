@@ -155,6 +155,82 @@ Every champion is tagged with a class in `constants.rs`:
   - **Attack range only:** reach uses attack range, not ability range, which undersells casters like Stellar.
   - **Camp over-prediction:** the over-prediction from entry 8 makes some duels look less winnable than they are.
 
+## 11. Economy: hold gems, funnel gold to DPS, roamers spread out (experiment, replaced)
+**Never committed.** Replaced by entry 12: gem-holding and roamer-spreading were removed, and the tank funnel was narrowed to AD carries. Kept here as a record of what was tried.
+
+- **Hold gems** (`should_bank`, a new `ChampionAi` hook so champions can override it): don't bank as soon as we carry gems.
+  - **Early game** (`EARLY_GAME_ROUNDS` = 300): hold gems and keep farming gold, unless the bag reaches `BIG_BAG` = 100.
+  - **After that:** bank only when no enemy champion is within `SAFE_RADIUS` = 8.
+  - **Always bank** in the last 100 rounds, or if the bag would win the game.
+- **Tank funnel:** tanks still fight camps, but leave a cleared group's capture tiles if a DPS ally (DpsAd, DpsAp, Assassin+DpsAp) is within 6 tiles. Rewards are split between every ally on the region, so the DPS gets all of it.
+- **Roamers spread out:** assassins and bruisers (Assassin, Bruiser, Assassin+DpsAp) skip a camp group an ally is already fighting, unless we're already in reach of it ourselves. If the fighting allies are losing (the camps would kill them before they clear the camps), the roamer goes to help instead.
+- **Classes:** `constants::class_of` maps each champion to Guancheng's class table.
+- **Results:** each variant vs `old-bot` (the version from entry 10), 9 maps × both sides × 5 seeds, giving 90 games each. The seed is the same for both bots in each game.
+
+  | Variant | Wins |
+  |---|---|
+  | Hold gems only | 45/90 (50%) |
+  | Tank funnel only | 44/90 (49%) |
+  | Roamers spread only | 43/90 (48%) |
+  | **All three** | **33/90 (37%)**, clearly worse |
+
+  - **Triggers** (all three on, 18 games): tank left a capture 1,228 times, roamer skipped a camp 2,629 times, roamer helped 559 times. 347 banks averaged 41 gems.
+- **Takeaways:** each change alone is neutral at these settings, but together they hurt. The cause isn't known yet. One guess: roamers carry more gems further from allies, so they die with bigger bags.
+- **Known issue:** farming now costs up to about 70–75k fuel on some turns (about 37k before). The 40k fuel guard is too small, giving about 11 timed-out turns per 9 games. Needs fixing whichever settings are kept.
+
+## 12. Fuel spike fix, AD-carry funnel, and "willingness to go back to base"
+**Uncommitted.** Ideas from Guancheng. Tested against `bots/old-bot` (a copy of commit `c777c3d`).
+
+- **Fuel spike fix:** farming was costing up to 70–75k fuel.
+  - **Causes:**
+    - `attack_if_in_range` built a new bitboard (`me.attack_tiles()`, about 2k fuel) for every unit it checked. It now compares Chebyshev distance with the attack range, which gives the same answer.
+    - The camp-attack scan now checks `can_attack` once and pre-filters camps by distance.
+    - The group scan no longer reads every camp's health, which was only needed for the removed roaming logic.
+    - Ally info is only read when a tank finds a capturable group.
+  - **Result:** farming averages 15k fuel (53k max), with 0 timed-out turns in about 61k turns.
+- **AD-carry funnel (`TANK_FUNNEL`):** a tank still fights camps, but won't stand on a cleared group's capture tiles if an AD carry ally (`ClassKind::DpsAd`, currently only Vesper Vale) has any of them within its attack range. Rewards are split between every ally on the region, so the carry gets all of it. It triggered 426 times in 18 games.
+- **Willingness to go back to base** (`common::base_willingness`, checked in `bot.rs` after fighting):
+  `W = BASE_W_GOLD × gold/150 + BASE_W_MISSING_HP × (1 − hp/max_hp) + BASE_W_ROUNDS_AWAY × rounds since last on spawn`
+  - **Gold** is measured in emblems' worth (150 gold). Champions that can shop anywhere (Tavi) get no gold term.
+  - **At W ≥ 1**, the champion walks to a safe tile and recalls (`retreat_and_recall`), then shops and heals at spawn.
+  - **Unchanged:** the hard recall below 35% health. Gems are still banked whenever carried; the old "bank immediately" behaviour now sits behind the `should_bank` hook.
+- **Tuning:** each setting vs `old-bot`, 9 maps × both sides × 5 seeds = 90 games, same seed for both bots in each game.
+
+  | gold / hp / per-round | Wins |
+  |---|---|
+  | 0 / 0 / 0 (funnel + fuel fix only) | 48/90 |
+  | 0.25 / 1.0 / 0.004 | 44/90 |
+  | 0.5 / 1.0 / 0.004 | 55/90 |
+  | 0.5 / 0.5 / 0.004 | 50/90 |
+  | 0.5 / 1.0 / 0 | 51/90 |
+  | 0.5 / 1.0 / 0.008 | 49/90 |
+  | 1.0 / 1.0 / 0.004 | 58/90 |
+  | 1.5 / 1.0 / 0.004 | 52/90 |
+  | 2.0 / 1.0 / 0.004 | 50/90 |
+  | 3.0 / 1.0 / 0.004 | 51/90 |
+  | **1.5 / 0.5 / 0.004** | **58/90** |
+  | 1.5 / 1.0 / 0 | 55/90 |
+
+  - **Holdout check:** the top two settings were rechecked on 5 seeds that weren't used for tuning. 1.0/1.0/0.004 got 50/90; **1.5/0.5/0.004 got 55/90, so 113/180 (63%) overall**. That setting is now the default.
+  - **Shape of the results:** gold is the term that matters. Too little gold pull is no better than none; between about 1 and 1.5 is best. Rounds-away and health have only small effects.
+- **Final check** (your `SEED`, 18 games vs `old-bot`): 13/18 wins, 0 errors, 0 timed-out turns, with at least 13k fuel always left.
+- **Follow-ups:**
+  - Gold could be weighed against what it buys: a nearly complete emblem is worth more.
+  - The funnel could also count AP carries if Vesper Vale alone is too narrow.
+  - The worst-case farming cost (53k) is mostly `move_towards_closest` and could be trimmed further.
+
+## 13. Fix: champions oscillating at the edge of vision of a respawning camp
+**Uncommitted.** Spotted by Tristan around round 740 on corners (`my-bot` as A vs `old-bot`).
+
+- **Bug:** farming skipped a camp group only while it was *visible* and respawning. A champion at the edge of vision saw the group respawning, so it targeted another camp and stepped away. It lost sight of the group, which made it the nearest target again, so it stepped back, and repeated.
+  - **Debugging:** per-turn decision logs (matches are deterministic, so logging replays the same game) showed every champion doing this while farming. Varg, for example, bounced between (8,32) and (7,33) for 39 turns while the group at (10,41) had about 40 rounds of respawn left.
+- **Fix:** when a champion sees a group respawning, it records the round it will be back (`RESPAWN_READY`, per champion) and skips that group until then, whether or not it's visible.
+- **Results:**
+  - **Oscillation:** across 18 games vs `old-bot`, runs of 6+ alternating turns fell from 104 (1,696 turns lost) for `old-bot` to 7 (55 turns) for `my-bot`, with 0 errors. Corners is now won from both sides.
+  - **Win rate:** vs `old-bot` over the same 180 games used for tuning, **111/180 (62%)**, compared with 113/180 before the fix. That's no measurable change in strength. The oscillation seems to have been partly "useful", because it kept champions near a camp that was about to respawn.
+- **Tried and rejected:** keeping a respawning group as a target if it would be back by the time we arrived. That got 30/90. Champions arrived early and stood on the spawn tiles, and an occupied spawn tile delays the whole group's respawn.
+- **Follow-up idea:** wait *next to* (not on) a nearby camp that's about to respawn, instead of walking to a far one. This needs walking distances to each group, e.g. from `WalkGrid`.
+
 ---
 
 ## Testing recipes

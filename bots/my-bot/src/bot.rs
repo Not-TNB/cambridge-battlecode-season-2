@@ -12,6 +12,7 @@ const MIN_FUEL_FOR_PATHING: u64 = 40_000;
 pub struct Bot {
     chosen_stat: Option<usize>,
     was_recalling: bool,
+    last_at_spawn_round: u32,
     ai: Option<Box<dyn ChampionAi>>,
 }
 
@@ -54,6 +55,7 @@ impl Bot {
             || (!me.can_move()? && !me.can_attack()?) { self.was_recalling = true; return Ok(()); }
 
         let at_spawn = cambc::map::spawn_region(Team::Ally)?.is_set(me.position()?)?;
+        if at_spawn { self.last_at_spawn_round = cambc::round_number()?; }
         if at_spawn || ai.shops_anywhere() { self.buy_items()?; }
 
         if self.was_recalling && !me.is_recalling()? {
@@ -69,10 +71,16 @@ impl Bot {
 
         if ai.fight()? { return Ok(()); }
 
+        // Go home to spend gold and heal once the pull is strong enough (see base_willingness).
+        let rounds_away = cambc::round_number()?.saturating_sub(self.last_at_spawn_round);
+        if !at_spawn && crate::common::base_willingness(ai.shops_anywhere(), rounds_away)? >= 1.0 {
+            return crate::common::retreat_and_recall();
+        }
+
         // Banking and farming pathfind (up to ~37k fuel); skip them rather than run out mid-turn.
         if cambc::fuel_remaining()? < MIN_FUEL_FOR_PATHING { return Ok(()); }
 
-        if me.gem_count()? > 0 {
+        if ai.should_bank()? {
             ai.bank_gems()?;
             return Ok(());
         }

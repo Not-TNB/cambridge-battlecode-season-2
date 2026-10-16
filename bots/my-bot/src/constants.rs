@@ -33,3 +33,19 @@ pub const CHAMP_CLASSES: [ClassKind; CHAMP_COUNT] = [
     ClassKind::AssassinAndDpsAp // Tavi
 ];
     
+// Class of a champion in play (ChampionType splits Cassi & Issac, which share one draft class).
+pub fn class_of(champion: cambc::ChampionType) -> ClassKind {
+    use cambc::ChampionType as C;
+    let draft = match champion {
+        C::Ryth => 0, C::VesperVale => 1, C::Vendetta => 2, C::Cassi | C::Issac => 3, C::Stellar => 4,
+        C::Prism => 5, C::Marcella => 6, C::Willow => 7, C::Ren => 8, C::Varg => 9, C::Tavi => 10,
+    };
+    CHAMP_CLASSES[draft]
+}
+
+impl ClassKind {
+    // Attack-damage carries: the champions camp rewards are funnelled to.
+    pub fn is_ad_carry(self) -> bool {
+        self == ClassKind::DpsAd
+    }
+}
