@@ -112,6 +112,49 @@ Every champion is tagged with a class in `constants.rs`:
   - The 30 misses look like enemies stepping into range and attacking. Adding melee move-then-attack reach would catch them, but would add false alarms.
   - Enemy false alarms are expected against the starter, which never casts abilities.
 
+## 9. Averaged enemy abilities, threat list, and safe recalls
+**Uncommitted.** Ideas from Guancheng.
+
+- **Averaged ability damage:** `enemy_dmg` no longer counts a ready ability as a full hit. Each enemy damaging ability in range now counts `damage / max_cooldown` per turn (1/8 of a hit), whatever its current cooldown. An attack reset counts 1/8 of an extra basic attack. Basic attacks in range still count in full.
+- **Threat list:** the damage code is now `Threats::scan()`. It gathers each camp, enemy attack and enemy ability as a `Threat { origin, range, damage }` once per turn, at about 7k fuel. After that, `damage_at(tile)` is cheap for any number of tiles, and `safe_tiles()` gives a bitboard of tiles with 0 expected damage. `expected_dmg(tile)` is still there as a single-tile shortcut.
+- **Safe recall** (`common::retreat_and_recall`, used by `bot.rs` below 35% health): if our tile has expected damage above 0, walk toward the nearest tile with 0 expected damage (`move_towards_closest(safe_tiles)`). Recall once on a safe tile, in the same turn if the step reaches one. If no safe tile can be reached, recall anyway. Damage interrupts recalls, so this avoids wasted recall attempts.
+- **Results:** vs `starter-rust`, 9 maps, both sides, compared with the previous commit `02555d1`:
+
+  | | Previous | New |
+  |---|---|---|
+  | Wins | 16/18 | **18/18** |
+  | Recalls started | 138 | 452 |
+  | Recalls interrupted | 43 (31%) | **27 (6%)** |
+
+  - **Head-to-head vs `02555d1`:** 9 maps, both sides. **The new version won 18/18**, each by reaching 1000 gems (rounds 470–1004), with 0 bot errors. Both versions use the same `SEED`, and the old one never called `expected_dmg`, so the only behaviour difference is the safe-recall logic.
+  - **Retreat behaviour:** 454 turns were spent walking to safety, then 414 recalls started on the same turn as a step reached a safe tile. Recalling after moving works (no errors).
+  - **Caveat:** a champion that died mid-recall and respawned would be miscounted as a completed recall. It's also unclear why the new version starts about 3× more recalls. Possibly champions survive to recall instead of dying, but this hasn't been checked.
+- **Open questions / follow-ups:**
+  - Camp false alarms (entry 8) also make some tiles look unsafe, which can lengthen retreats.
+  - It doesn't cancel a recall that's already in progress when a threat appears; damage interrupts it anyway.
+
+## 10. Chasing enemies we expect to beat (1v1 simulation)
+**Uncommitted.** Idea from Guancheng.
+
+- **What it does:** `common::fight_enemies` first strikes anything already in reach, as before. If nothing is in reach, it simulates a chase on each visible enemy (`plan_duel`):
+  1. **Walk:** find the shortest path to a tile within our attack range of the enemy. Add up `Threats::damage_at` on every tile where we'd end a walking turn. This includes camps and every other enemy, not just the target.
+  2. **1v1:** from the final tile, compare `kill_turns = ceil(enemy hp / our damage per turn)` with `die_turns = ceil(hp left after the walk / damage per turn on that tile)`. Both sides' damage per turn is a basic attack plus abilities averaged over their cooldown (1/8), the same model as `Threats`.
+  3. **Winnable** if we survive the walk and `kill_turns <= die_turns`. Ties go our way, because we arrive and hit first.
+
+  Among winnable enemies it chases the one with the fewest walking + killing turns. It keeps chasing the same target (remembered by champion type) while that target stays winnable. Ranged champions use the same logic, so their walk is usually zero.
+- **Implementation notes:**
+  - **Cheap path lookups:** one distance field from our tile, capped at 16 steps (`MAX_CHASE_STEPS`), is exported into a Rust array (`WalkGrid`). All path lookups for every enemy are then plain Rust instead of SDK calls. That took the per-enemy cost from about 12k to about 1–2k fuel.
+  - **Movement:** the chase steps straight onto the first tile of the planned path. After moving, `strike` skips "excludes walking" abilities; trying to cast one was causing engine error 126 in testing.
+  - **Fuel guard:** `bot.rs` skips banking and farming for the turn if less than 40k fuel is left (`MIN_FUEL_FOR_PATHING`). In the head-to-head it triggered on 101 of about 45k turns.
+- **Results:**
+  - **vs `starter-rust`:** 18/18 wins, 0 errors, 0 timed-out turns in about 51k turns. Before the fuel fixes the first version had 69 timeouts and 45 errors.
+  - **vs the pre-chase version** (entry 9): **13/18 wins**, 0 errors. It lost interlock, packs and rows as B, and expanse and lanes as A. Expanse and lanes were won by the same side in the same round in both games, so those two look decided by side rather than by the bot.
+- **Simplifications / follow-ups:**
+  - **Enemies don't move in the model:** no kiting or retreat. Basic attacks use raw Strength.
+  - **Chasing takes priority over banking:** a winnable chase beats banking gems even when we're carrying many.
+  - **Attack range only:** reach uses attack range, not ability range, which undersells casters like Stellar.
+  - **Camp over-prediction:** the over-prediction from entry 8 makes some duels look less winnable than they are.
+
 ---
 
 ## Testing recipes

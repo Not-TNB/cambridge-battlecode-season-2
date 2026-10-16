@@ -4,6 +4,9 @@ use crate::champions::{self, ChampionAi};
 use crate::common::me;
 use cambc::{ItemType as Item, Result, Team};
 
+// Fuel to keep in hand before starting a pathfinding step (bank_gems / farm).
+const MIN_FUEL_FOR_PATHING: u64 = 40_000;
+
 // Per-champion state survives between turns. Pick one stat and keep buying it.
 #[derive(Default)]
 pub struct Bot {
@@ -61,11 +64,13 @@ impl Bot {
         }
 
         if !at_spawn && me.health()? < me.max_health()? * 0.35 {
-            me.recall()?;
-            return Ok(());
+            return crate::common::retreat_and_recall();
         }
 
         if ai.fight()? { return Ok(()); }
+
+        // Banking and farming pathfind (up to ~37k fuel); skip them rather than run out mid-turn.
+        if cambc::fuel_remaining()? < MIN_FUEL_FOR_PATHING { return Ok(()); }
 
         if me.gem_count()? > 0 {
             ai.bank_gems()?;
