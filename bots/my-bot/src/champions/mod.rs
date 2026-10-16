@@ -1,6 +1,6 @@
 // One file per champion. Each implements `ChampionAi`, overriding only the decisions where
 // its kit should play differently; everything else falls back to the shared logic in common.rs.
-use cambc::{ChampionType, Result};
+use cambc::{ChampionType, ItemType, Result};
 
 mod cassi;
 mod issac;
@@ -17,6 +17,10 @@ mod willow;
 
 // Decision points bot.rs calls each turn, in priority order: shop, fight, bank gems, farm.
 pub trait ChampionAi {
+    // Emblems to complete in order, each given by the shard that builds it (five combine into
+    // one emblem); the last entry repeats once the list is done. Empty = random single stat.
+    fn build(&self) -> &'static [ItemType] { &[] }
+
     // Whether this champion may buy items away from its spawn.
     fn shops_anywhere(&self) -> bool { false }
 

@@ -17,12 +17,36 @@ pub struct Bot {
 }
 
 impl Bot {
-    fn buy_items(&self) -> Result<()> {
-        // Spend only on power shards of the randomly chosen stat.
+    // Follow the champion's build order: complete its emblems one at a time, buying only the
+    // shards the current emblem still needs, and repeat the last entry once the list is done.
+    // Champions without a build order buy power shards of one randomly chosen stat.
+    fn buy_items(&self, build: &[Item]) -> Result<()> {
         let me = me()?;
-        let item = [Item::PowerShardOfStrength, Item::PowerShardOfFocus, Item::PowerShardOfHealth][self.chosen_stat.unwrap()];
-        let count = me.gold_count()? / item.cost()?;
-        if count > 0 && me.can_buy(item, count)? { me.buy_count(item, count)?; }
+        let mut gold = me.gold_count()?;
+        if build.is_empty() {
+            let item = [Item::PowerShardOfStrength, Item::PowerShardOfFocus, Item::PowerShardOfHealth][self.chosen_stat.unwrap()];
+            let count = gold / item.cost()?;
+            if count > 0 && me.can_buy(item, count)? { me.buy_count(item, count)?; }
+            return Ok(());
+        }
+        let mut owned = [0u32; 42];
+        for (item, count) in me.item_count()?.iter() { owned[item as usize] = count; }
+        let mut wanted = [0u32; 42]; // emblems the build calls for up to the current entry
+        for i in 0..64 {
+            let shard = build[i.min(build.len() - 1)];
+            let Some(emblem) = shard.result()? else { continue };
+            wanted[emblem as usize] += 1;
+            if owned[emblem as usize] >= wanted[emblem as usize] { continue; }
+            let cost = shard.cost()?;
+            let to_finish = shard.combine_count()?.saturating_sub(owned[shard as usize]);
+            let count = to_finish.min(gold / cost);
+            if count == 0 || !me.can_buy(shard, count)? { break; }
+            me.buy_count(shard, count)?;
+            gold -= count * cost;
+            if count < to_finish { break; }
+            owned[shard as usize] = 0;
+            owned[emblem as usize] += 1;
+        }
         Ok(())
     }
 
@@ -56,7 +80,7 @@ impl Bot {
 
         let at_spawn = cambc::map::spawn_region(Team::Ally)?.is_set(me.position()?)?;
         if at_spawn { self.last_at_spawn_round = cambc::round_number()?; }
-        if at_spawn || ai.shops_anywhere() { self.buy_items()?; }
+        if at_spawn || ai.shops_anywhere() { self.buy_items(ai.build())?; }
 
         if self.was_recalling && !me.is_recalling()? {
             self.was_recalling = false;

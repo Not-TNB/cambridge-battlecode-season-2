@@ -231,6 +231,47 @@ Every champion is tagged with a class in `constants.rs`:
 - **Tried and rejected:** keeping a respawning group as a target if it would be back by the time we arrived. That got 30/90. Champions arrived early and stood on the spawn tiles, and an occupied spawn tile delays the whole group's respawn.
 - **Follow-up idea:** wait *next to* (not on) a nearby camp that's about to respawn, instead of walking to a far one. This needs walking distances to each group, e.g. from `WalkGrid`.
 
+## 14. Per-champion build orders (shopping)
+**Uncommitted.** Build table by Guancheng.
+
+- **What changed:** each champion file now has a `build()` hook: an ordered list of emblems (family + stat), each given by the shard that builds it. Shopping (`Bot::buy_items`) completes them one at a time:
+  1. Find the first emblem on the list the champion doesn't own yet.
+  2. Buy only the shards it still needs.
+  3. Carry leftover gold into the next emblem.
+  4. Repeat the last entry once the list is done.
+
+  This focuses on one stat early (completing a family) and branches later. Champions without a build (none now) fall back to the old random single stat.
+- **Builds** (AP = Focus, AD = Strength, HP = Health; one emblem per entry):
+
+  | Champion | Build |
+  |---|---|
+  | Cassi | Treasure AP, Power AP, Power AP, Power HP, Power AP… |
+  | Issac | Treasure AD, Monster AD, Power AD, Bruiser HP, Power AD… |
+  | Ryth | Power HP, Bruiser HP, Durability HP, Power HP… |
+  | Vesper Vale | Treasure AD, Power AD, Power HP, Power AD… |
+  | Prism | Monster AP, Power AP, Bruiser HP, Power AP… |
+  | Stellar | Power AP, Treasure AP, Power AP, Bruiser AP, Power AP… |
+  | Vendetta | Power AD, Bruiser AD, Power AD… (Treasure-if-ahead not modelled) |
+  | Marcella | Durability HP, Power HP, Bruiser HP, Power HP… |
+  | Tavi | Power AP, Power AP, Bruiser AD, Power AD… (HP skipped: HP bought in the field doesn't heal) |
+  | Willow | Power AP, Bruiser AP, Power AP… |
+  | Ren | Bruiser HP, Durability HP, Power AP (retaliation scales with Focus), Power HP… |
+  | Varg | Treasure AD, Monster AD, Bruiser AD, Durability HP, Power AD… |
+
+- **Verification:** purchase logs show five shards combining into the planned emblem in order, with leftover gold rolling into the next one, and no errors. First emblems usually complete between rounds 50 and 370.
+- **Results:** each version vs `old-bot`, 9 maps × both sides × 10 seeds = 180 games:
+
+  | Version | Wins |
+  |---|---|
+  | No build orders (previous `my-bot`) | 111/180 (62%) |
+  | **Build table** | **145/180 (81%)** |
+  | Table with Treasure → Power | 141/180 (78%) |
+
+  Also tried on seeds 1–5 (90 games), with no gain over the table (71/90): Jungle HP first for the tanks got 70/90, and Home (shorter recall) as everyone's second emblem except Tavi got 70/90.
+- **Follow-ups:**
+  - Vendetta's "Treasure if super ahead" isn't modelled.
+  - Builds could react to the game, e.g. Durability when the enemy has a lot of burst.
+
 ---
 
 ## Testing recipes
