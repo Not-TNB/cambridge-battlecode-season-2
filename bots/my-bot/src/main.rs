@@ -13,7 +13,7 @@ thread_local! {
 // WASI randomness is always zero in matches, so seed from our spawn and this champion's start.
 fn random_seed() -> u64 {
     // Fixed per build: change it (or run scripts/reseed.sh) to change this bot's random choices.
-    const SEED: u64 = 0x72bffdb2db81887f;
+    const SEED: u64 = 0x72bffab2db81887d;
     let spawn = cambc::map::spawn_region(cambc::Team::Ally).ok().and_then(|region| region.positions().ok()?.first().copied());
     let start = cambc::self_champion().ok().flatten().and_then(|me| me.position().ok());
     [spawn, start].into_iter().flatten()

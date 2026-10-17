@@ -9,6 +9,6 @@ pub struct VesperVale;
 impl ChampionAi for VesperVale {
     // Build: AD -> some hp; Treasure / Power.
     fn build(&self) -> &'static [I] {
-        &[I::TreasureShardOfStrength, I::PowerShardOfStrength, I::PowerShardOfHealth, I::PowerShardOfStrength]
+        &[I::PowerShardOfStrength, I::PowerShardOfStrength, I::PowerShardOfHealth, I::PowerShardOfStrength]
     }
 }

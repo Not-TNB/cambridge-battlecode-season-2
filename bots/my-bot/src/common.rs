@@ -1,6 +1,6 @@
 // Shared helpers every champion can use: movement, targeting, fighting and farming.
 use cambc::{
-    Ability, Bitboard, CampGroup, Champion, ChampionType, DistanceField, Result, Team, Unit, Vec2,
+    Ability, Bitboard, CampGroup, Champion, ChampionType, DistanceField, Result, Team, Unit, Vec2, Camp
 };
 use std::cell::OnceCell;
 
@@ -61,6 +61,42 @@ pub fn move_towards_closest(mut goals: Bitboard) -> Result<bool> {
         if field.get(tile)? < field.get(step)? { step = tile; }
     }
     if step == origin { Ok(false) } else { me.move_absolute(step) }
+}
+
+// Cast a damaging ability on a camp within range: unit spells on the camp, ground spells on its tile.
+pub fn cast_at_camp(ability: &Ability, camp: &Camp) -> Result<bool> {
+    let Some(info) = ability.info()? else { return Ok(false) };
+    // Our attack this turn may have killed it.
+    if !camp.is_visible()? || camp.health()? <= 0.0 { return Ok(false); }
+    let target = camp.spawn_position();   // camps never move
+    if distance(me()?.position()?, target) as f32 > info.as_dyn().range()? { return Ok(false); }
+    if ability.can_target_camps()? { return ability.cast_on(camp); }
+    if ability.can_target_ground()? { return ability.cast_at(target); }
+    if ability.is_attack_reset() { 
+        if ability.cast_untargeted()? {
+            return attack_camp_in_range();
+        }
+    }
+    Ok(false)
+}
+
+// With no enemy champion in sight, spend ready damaging abilities on camps in range.
+// Returns true if we cast something that excludes walking (so the turn's move is used up).
+fn cast_abilities_on_camps() -> Result<bool> {
+    let me = me()?;
+    if !me.can_cast()? || !cambc::vision::champions(Some(Team::Enemy))?.is_empty() {
+        return Ok(false);
+    }
+    let camps = cambc::vision::camps()?;
+    for ability in me.abilities() {
+        if !ability.is_ready()? || (!is_damaging(ability) && !ability.is_attack_reset()) { continue; }
+        let blocks_walking = ability.info()?
+            .is_some_and(|info| info.as_dyn().is_exclusive_with_movement());
+        for camp in &camps {
+            if cast_at_camp(ability, camp)? { return Ok(blocks_walking); }
+        }
+    }
+    Ok(false)
 }
 
 // Make one basic attack if the target is already in attack range.
@@ -471,7 +507,11 @@ thread_local! {
 // Farm the nearest camps that aren't respawning (including ones we saw respawning earlier). Tanks still fight camps but leave the capture
 // of a cleared group to a covering AD carry (see TANK_FUNNEL).
 pub fn farm_camps() -> Result<()> {
-    if attack_camp_in_range()? { return Ok(()); }
+    let attacked = attack_camp_in_range()?;
+    if attacked { 
+        cast_abilities_on_camps()?;
+        return Ok(()); 
+    }
 
     let is_tank = TANK_FUNNEL && crate::constants::class_of(me()?.champion_name()?) == crate::constants::ClassKind::Tank;
     // Set goal bits directly: each new Bitboard costs ~2k fuel in the Rust SDK.
@@ -505,6 +545,10 @@ pub fn farm_camps() -> Result<()> {
     }
     RESPAWN_READY.with(|cell| cell.replace(ready));
 
-    if move_towards_closest(goals)? { attack_camp_in_range()?; }
+    if move_towards_closest(goals)? { 
+        if attack_camp_in_range()? {
+            cast_abilities_on_camps()?;
+        }
+    }
     Ok(())
 }

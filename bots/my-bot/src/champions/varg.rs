@@ -10,6 +10,6 @@ pub struct Varg;
 impl ChampionAi for Varg {
     // Build: AD max, one Durability late; Treasure / Monster -> Bruiser / Durability.
     fn build(&self) -> &'static [I] {
-        &[I::TreasureShardOfStrength, I::MonsterShardOfStrength, I::BruiserShardOfStrength, I::DurabilityShardOfHealth, I::PowerShardOfStrength]
+        &[I::TreasureShardOfStrength, I::MonsterShardOfStrength, I::BruiserShardOfStrength, I::BruiserShardOfHealth, I::PowerShardOfStrength]
     }
 }
