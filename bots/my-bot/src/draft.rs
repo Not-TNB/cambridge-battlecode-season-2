@@ -1,5 +1,5 @@
 use cambc::{ChampionDraft, Result, Team};
-use crate::constants::{CHAMP_CLASSES, CLASS_COUNT, ClassKind};
+use crate::constants::{CLASS_COUNT, ClassKind, draft_class};
 
 
 fn calc_balance() -> Result<[f64; CLASS_COUNT]> {
@@ -11,7 +11,7 @@ fn calc_balance() -> Result<[f64; CLASS_COUNT]> {
     }
     
     for i in 0..theirs.len() {
-        match CHAMP_CLASSES[theirs[i] as usize] {
+        match draft_class(theirs[i]) {
             ClassKind::Tank => {
                 bias[ClassKind::DpsAp as usize] *= 5.0;
                 bias[ClassKind::DpsAd as usize] *= 5.0;
@@ -43,7 +43,7 @@ fn calc_balance() -> Result<[f64; CLASS_COUNT]> {
     }
 
     for i in 0..mine.len() {
-        match CHAMP_CLASSES[mine[i] as usize] {
+        match draft_class(mine[i]) {
             ClassKind::Tank => {
                 bias[ClassKind::DpsAp as usize] *= 5.0;
                 bias[ClassKind::DpsAd as usize] *= 5.0;
@@ -91,26 +91,36 @@ fn weighted_pick(biases: &[f64]) -> usize {
 }
 
 pub fn play() -> Result<()> {
-    let pick_bias = calc_balance()?;
+    let mut pick_bias = calc_balance()?;
+    let ally_draft: Vec<ChampionDraft> = cambc::draft::current_draft(Team::Ally)?;
+    // Never roll a class we have no champions left in (e.g. a second assassin: Vendetta is the only
+    // one): the empty pick list used to panic, and the game then picked for us at random.
+    for (i, bias) in pick_bias.iter_mut().enumerate() {
+        let class = ClassKind::ALL[i];
+        if !ChampionDraft::ALL.iter().any(|&p| draft_class(p) == class && !ally_draft.contains(&p)) { *bias = 0.0; }
+    }
 
     let picked_class = weighted_pick(&pick_bias);
     
-    /* Debug print to check if the pick bias works correctly or needs tuning */
-    println!("{:?}", pick_bias);        // [1.2, 3.3, 0.2]
-    println!("{:.2?}", pick_bias);      // 2 decimal places: [1.20, 3.30, 0.20]
+    // No debug print of pick_bias here: formatting floats costs ~30k fuel, and draft turns after
+    // the first get only ~100k (running out means the game picks for us at random).
 
     println!("Picked {}", picked_class);
 
     let mut filtered_champs: Vec<ChampionDraft> = Vec::new();
-    let ally_draft: Vec<ChampionDraft> = cambc::draft::current_draft(Team::Ally)?;
-    for i in 0..11 {
-        let pick = ChampionDraft::try_from(i)?;
-        let target = ClassKind::ALL[picked_class];   // picked_class is the index from weighted_pick
-
-        if CHAMP_CLASSES[i as usize] == target && !ally_draft.contains(&pick) {
+    let target = ClassKind::ALL[picked_class];   // picked_class is the index from weighted_pick
+    for &pick in ChampionDraft::ALL {
+        if draft_class(pick) == target && !ally_draft.contains(&pick) {
             filtered_champs.push(pick);
         }
     }
 
-    cambc::draft::pick(filtered_champs[crate::random_number(filtered_champs.len() as u32) as usize])
+    let choice = filtered_champs[crate::random_number(filtered_champs.len() as u32) as usize];
+    // Hot-spot plan for our picks including this one. It must be submitted before picking (the
+    // pick ends our draft turn: submitting after it is engine error 18), and a failure here must
+    // not cost us the pick.
+    let mut picks = ally_draft;
+    picks.push(choice);
+    if let Err(error) = crate::hotspots::submit_plan(&picks) { println!("hotspot plan failed: {error}"); }
+    cambc::draft::pick(choice)
 }

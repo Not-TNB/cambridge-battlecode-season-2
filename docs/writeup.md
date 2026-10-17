@@ -272,6 +272,241 @@ Every champion is tagged with a class in `constants.rs`:
   - Vendetta's "Treasure if super ahead" isn't modelled.
   - Builds could react to the game, e.g. Durability when the enemy has a lot of burst.
 
+## 15. Ranged kiting, engaging nearby enemies, and retreating toward base
+**Uncommitted.** Ideas from Tristan.
+
+- **Retreat toward base:** fleeing (`retreat_and_recall`) used to go to the nearest safe tile, with ties broken by tile order, so champions drifted bottom-right. Each step now also costs `RETREAT_HOME_PULL` (0.5) × Chebyshev distance to our spawn centre (`move_towards_closest_with_pull`). Because the pull is below 1, every step still gets closer to safety. Not measured separately: it is in both sides of the tests below.
+- **Kiting** (`kite_melee`, `KITE_DISTANCE` = 2): a ranged champion with a melee enemy within 2 tiles (close enough to walk in and hit next turn) steps to the reachable tile furthest from it (capped at our attack range). Ties go to less expected damage, then to staying in attack range of an enemy. Ranged champions can either move or attack each turn, so a kite step costs a shot. Walk-compatible abilities are still cast after the step. Fired about 18 times per game.
+- **Engaging nearby enemies** (`ENGAGE_RADIUS` = 3): an enemy within 3 tiles is chased even if the duel model says we'd lose, as long as we survive the walk. This pulls us off a camp to fight. Enemies further away are still only chased when the duel is winnable. Fired about 9 times per game.
+- **Results:** each variant vs the same bot with both off, 9 maps × both sides, same seed for both bots. Seeds 1–10 were used for tuning; seeds 11–20 are the holdout.
+
+  | Variant | Seeds 1–10 | Seeds 11–20 | Total |
+  |---|---|---|---|
+  | Kite at ≤2 | 98/180 | 95/180 | 193/360 (54%) |
+  | Kite at ≤3 | 87/180 | | |
+  | Engage within 3 | 98/180 | 92/180 | 190/360 (53%) |
+  | Engage within 5 | 84/180 | | |
+  | Engage within 8 | 79/180 | | |
+  | **Kite ≤2 + engage 3** | **103/180** | **101/180** | **204/360 (57%)** |
+
+  - Engaging from further away hurts: we abandon camps for fights we expect to lose.
+  - Kiting from 3 tiles away costs too many shots.
+- **Follow-ups:**
+  - Kiting treats every melee enemy alike. It could skip kiting when we win the duel anyway, or when the enemy has a dash (Issac, Vendetta, Ren) and stepping back gains nothing.
+  - Engage still uses the duel model's camp damage; a camp we're fighting makes nearby duels look worse than they are.
+
+## 16. Remembering a lost chase target, and warding where it vanished
+**Uncommitted.** Spotted by Tristan.
+
+- **Bug:** a chase path that bends away from the enemy (around a wall) could drop it out of vision. With no enemy in sight, the champion went back to farming, stepped back, saw the enemy again and resumed the chase: back and forth.
+- **Fix:**
+  - **Memory** (`CHASE_MEMORY_ROUNDS` = 3): the chase target now stores its last seen position and round, refreshed every turn it's visible. If it drops out of sight and nothing else is worth chasing, `follow_lost_target` keeps walking to that position. It forgets the target after 3 rounds, or on arriving without finding it.
+  - **Ward** (`WARD_LOST_TARGET`): if the last seen position is hidden (in a bush or behind a wall) and within ward range (2), the champion places its ward there, or on a free tile next to it, bushes first. Wards are free and recharge after a round.
+- **Results:** vs the same bot with both off, 9 maps × both sides. "Runs" are 6+ turns alternating between two tiles.
+
+  | Variant (seeds 1–10) | Wins | Runs | Turns in runs |
+  |---|---|---|---|
+  | Off | | 276 | 2,943 |
+  | Memory 3, no ward | 94/180 | 218 | 2,685 |
+  | Memory 2 + ward | 93/180 | 206 | 2,619 |
+  | **Memory 3 + ward** | 90/180 | **191** | **2,317** |
+  | Memory 6 + ward | 95/180 | 209 | 2,345 |
+
+  - **Holdout** (seeds 11–20): memory 3 + ward got 89/180, with runs down from 296 to 209 (2,906 → 2,057 turns). Over 360 games that's 179/360: neutral on win rate.
+  - **About 1.5 wards per game** were placed on a lost target, and about 55 turns per game were spent walking after one.
+- **What's left:** a per-turn branch log (18 games) showed no remaining runs from a lost target. Most were mutual dances: our chaser against their kiting ranged champion (or the reverse), each stepping in and out of reach. Five were plain farming runs.
+- **Follow-ups:** a chase could stop when the target only steps in and out of range, e.g. by holding position if the duel tile alternates.
+
+## 17. Dashing, Willow's heal and Varg's shield
+**Uncommitted.** Ideas from Tristan.
+
+- **Travel dash** (`DASH_TRAVEL_MIN_STEPS` = 4, in `move_towards_closest_with_pull`): champions with a dash (Issac, Vendetta, Ren, Vesper Vale) dash along the path when the goal is 4+ steps away and no enemy is in sight. Fleeing (`retreat_and_recall`) always dashes. After a dash we still take the normal step. Blocked tiles are recomputed first, since the dash can reveal units (otherwise engine error 22, "known occupied destination").
+- **Chase dash** (`DASH_CHASE`, `dash_at_chase_target`): when chasing, dash to the tile with the shortest walk to our attack range of the target, then walk (melee) and strike.
+  - Against a ranged target, we only dash if dash + a walking step puts us in range this turn. Until then we walk, which stops us just outside its range of 3, ready to dash in next turn.
+  - Against melee targets we dash whenever it gets us closer.
+  - **Mechanics checked in logs:** after a dash a champion can still walk and basic-attack, and ranged Vesper Vale can dash and shoot in the same turn. A dash uses the turn's one spell cast.
+- **Willow heal** (`HEAL_BELOW` = 0.5, `Willow::support`): heals the ally in range (4) with the lowest health fraction, once one is below 50%.
+- **Varg shield** (`SHIELD_ENEMY_WITHIN` = 2, `Varg::support`): shields when Varg lost health since his last turn, or an enemy champion is within 2 tiles.
+- **New hook:** `ChampionAi::support()` runs every turn before the low-health recall and fighting, so heals and shields also happen while retreating.
+- **Results:** each variant vs the same bot with all four off, 9 maps × both sides × 10 seeds (180 games).
+
+  | Variant | Seeds 1–10 | Seeds 11–20 |
+  |---|---|---|
+  | **All four on** | **127/180** | **127/180** (254/360, 71%) |
+  | All on, always chase-dash (no ranged-target rule) | 126/180 | 131/180 (257/360) |
+  | Travel dash only | 104/180 | |
+  | Chase dash only | 96/180 | |
+  | Chase dash only, always dash | 105/180 | |
+  | Heal only (below 50%) | 89/180 | |
+  | Heal only (below 75%) | 92/180 | |
+  | Shield only (hit or enemy within 2) | 103/180 | |
+  | Shield only (when hit) | 103/180 | |
+
+  - Together they're worth far more than the parts suggest, probably because every game has some of these champions and their gains add up.
+  - The ranged-target rule makes no measurable difference against always dashing. It's kept as the default.
+  - Heal alone is neutral.
+- **Errors:** dash/heal/shield add no new error types in 54 debug games vs `old-bot`. Separately, code from `5efa6e7` (`cast_abilities_on_camps`) errors every time it reaches an attack reset (`NoRange`: resets have no spell range, so the reset-on-camp branch never runs). Ren and Ryth also hit engine error 126 (walk-excluding spell cast after moving). Both happen at the end of the turn and appear on both sides of these tests.
+
+## 18. Bug fixes, healers funnel captures, and less walking to altars
+**Uncommitted.** Requested by Tristan.
+
+- **Testing change:** to keep runs short, each test is now 80 games: 5 seeds × 8 maps × both sides. Each seed skips a different map (map number = seed mod 9), so all 9 maps get used. Results below are vs the same bot with every change in this entry off. One 80-game run has a standard error of about ±5.6 points (±4.5 wins), so single runs only catch large effects.
+- **Fixes to `cast_abilities_on_camps` (from `5efa6e7`):**
+  - Attack resets asked for a spell range, which they don't have (`NoRange` error every time). They now use our attack range, so the reset-and-attack-again on camps finally runs.
+  - Walk-excluding spells (Ren's and Ryth's stuns) were cast at camps after moving (engine error 126). They're now skipped after a move.
+  - Errors went from about 20,000 per 54 games to a handful of rare ones that the baseline has too. Win rate alone: 40/80.
+- **Fix to dashing (entry 17):** a dash onto a tile hiding an unseen unit fails and reveals it. The walking step planned before the dash could then target that same tile, which is engine error 22, every turn (22 errors in one game). Blocked tiles are now recomputed after any dash attempt, and the chase step checks champion tiles first.
+- **Healers funnel too** (`FUNNEL_HEALERS`): Willow, like tanks, leaves a cleared group's capture to an AD carry covering it. Alone: 41/80.
+- **Banking.** About 85% of the turns spent walking to an altar came within 30 rounds of leaving spawn: champions recalled, then walked to an altar with a small bag.
+
+  | Variant (vs all off) | Seeds 1–5 | Seeds 6–10 | Bank-walk turns/game (base → variant) |
+  |---|---|---|---|
+  | Bank before every go-home recall | 30/80 | | |
+  | Bank before go-home recall if an altar is within 8 (`BANK_BEFORE_RECALL_TILES`) | 44/80 | 40/80 | 518 → 476 |
+  | … within 4 | 46/80 | 37/80 | |
+  | Hold gems until 20 (`BANK_MIN_GEMS`; any bag if an altar is within 6) | 39/80 | | |
+  | Hold until 40 | 43/80 | 38/80 | 458 → 280 |
+  | Hold until 60 / 80 | 36/80 / 36/80 | | |
+  | Hold until 40, near radius 3 / 10 | 32/80 / 40/80 | | |
+  | Bank-first within 8 + hold until 40 | 44/80 | 37/80 | ~460 → 265 |
+
+  - Banking before *every* go-home recall clearly hurts, probably from long walks to altars before healing. Limiting it to nearby altars, or holding gems, is neutral on win rate.
+- **All of entry 18 together** (fixes + healer funnel + bank-first within 8 + hold until 40): **92/160 (58%)**, with bank walking down from 457 to 275 turns per game (205 vs 383 within 30 rounds of leaving spawn). The same without gem holding got 93/160, so holding is kept for the walking it saves rather than for wins.
+- **Remaining errors:** about 1 per 20 games, all kinds that also appear in the baseline: "unit is not in vision", "champion cannot act", and rarely "no visible entity".
+
+## 19. New maps
+**Uncommitted.** Maps added by Tristan, renamed from their UUIDs after looking at each layout.
+
+| Map | Size | Layout |
+|---|---|---|
+| `moat` | 41×30 | Spawns left/right; central altar in a bush between two lines of holes |
+| `citadel` | 100×100 | Holes fill two opposite corners; walled rooms in the middle |
+| `trenches` | 50×65 | Long vertical channels of holes with gold clusters between them |
+| `rift` | 30×30 | Small; holes cut off two corners along a diagonal |
+| `hedgerows` | 31×31 | Open, crossed by two full-width bush lines; six altars |
+| `spine` | 30×80 | Both spawns side by side in the middle; holes down the centre with wall rungs; altars at both ends |
+| `orchard` | 60×50 | Columns of bushes in a band of holes; mostly gold clusters, gem camps far from spawn |
+| `spiral` | 45×30 | Holes ring the map; walls spiral round the central altars |
+
+- **Results:** current working tree (entries 15–18) vs the latest commit `5efa6e7`, 8 new maps × both sides × 5 seeds: **63/80 (79%)**.
+
+  | Map | Wins | Rounds |
+  |---|---|---|
+  | rift | 9/10 | 697–1289 |
+  | citadel | 9/10 | 688–817 |
+  | orchard | 9/10 | all 2000 |
+  | moat | 8/10 | 716–1254 |
+  | trenches | 8/10 | 955–1232 |
+  | hedgerows | 7/10 | 550–745 |
+  | spiral | 7/10 | 610–1249 |
+  | spine | 6/10 | all 2000 |
+
+- **Problems found (both versions):**
+  - **spine:** the spawns touch, so both teams stand on them attacking each other across the border. Spawn tiles heal to full every turn, so nobody dies or leaves; 1,404 of the first ~1,500 champion turns were fights. One game ended 44 gems to 0. A fix would be to ignore enemies standing on their own spawn.
+  - **orchard:** farming goes to the nearest camps, which here are gold clusters (35 gold, 0 gems). Champions farm all game but carry no gems: one game ended 360 to 0, with about 12k gold earned each. A fix would be to prefer gem-giving camps (or skip gold clusters when gem camps are reachable).
+
+## 20. Farming: gold first, then gems
+**Uncommitted.** Requested by Tristan: prefer gold early (gems early give no real advantage), then move to gem clusters and monoliths.
+
+- **What changed** (`FARM_PHASE_FILTER`, `FARM_GEM_PHASE_ROUND` = 150, in `farm_camps`): still walk to the nearest available camp, but only among the kinds preferred in the current phase.
+  - **Before round 150:** skip gem clusters (0 gold) and monoliths.
+  - **From round 150:** skip gold clusters (35 gold, 0 gems).
+  - If none of the preferred kinds is available, fall back to all camps.
+- **Testing:** vs the same bot with the filter off. 80 games on the 8 new maps (5 seeds × both sides) + 20 on the old maps (one seed on all 9 maps × both sides, plus one map).
+
+  | Switch round | New maps | Old maps | Total |
+  |---|---|---|---|
+  | 0 (gems from the start) | 47/80 | 8/20 | 55/100 |
+  | 75 | 45/80 | 11/20 | 56/100 |
+  | **150** | **52/80** | **11/20** | **63/100** |
+  | 225 | 49/80 | 9/20 | 58/100 |
+  | 300 | 49/80 | 9/20 | 58/100 |
+  | 150, holdout (seeds 6–10 / 6–7) | 49/80 | 10/20 | 59/100 |
+
+  - Round 150 totals **122/200 (61%)**. Orchard (entry 19), where farming the nearest gold clusters left teams with no gems, went 20/20. Trenches 16/20.
+- **Tried first and dropped: choosing one camp group by value.** Each champion scored every available group by (gold + gem weight × gems) ÷ (walk + kill + capture turns). The gem weight ramped from 0 to 10 gold per gem. Champions kept their target unless another scored 1.3× better.
+
+  | Variant | New maps | Old maps |
+  |---|---|---|
+  | Ramp rounds 150→450 | 39/80 | 8/20 |
+  | Ramp 50→200 | 42/80 | 7/20 |
+  | Reward split between allies on the group | 35/80 | 8/20 |
+  | Both | 36/80 | 4/20 |
+  | Nearest with per-type distance nudges, committed to one group | 34/80 | 7/20 |
+
+  - Orchard was fixed every time (9–10/10), but moat and spiral fell to 1–3/10. A solo kill-time estimate makes elk groups look slow, so champions walked off to cheap camps alone. Nearest-of-all farming keeps the team together.
+  - Scoring was also expensive: 27–36k fuel per re-score after trimming (initially 50–75k, from copying a whole-map distance field into Rust and per-camp `is_set` host calls). Pure Rust work is metered too.
+- **Fixes found along the way:**
+  - The attack reset on camps (entry 18) could be cast while the attack was still available (engine error 26). It's now only cast after the attack is spent.
+  - The single-goal shortcut in `move_towards_closest` used the SDK's `move_towards`, which can step onto occupied tiles. It's removed.
+  - A step or dash onto a tile our occupancy view hasn't caught up with (seen right after dashes) is now treated as not moving (`step_to`, `dash_to_best`) instead of an error that ends the turn.
+- **Still open:** spine stays 5/10 in every test. Its spawns touch, and both teams fight across the border at spawn forever (entry 19).
+
+## 21. Hot spots (experiment, off), draft fixes, and custom test maps
+**Uncommitted.** Idea from Tristan. `HOTSPOTS = false`: every version tested lost.
+
+- **What it does** (`src/hotspots.rs`):
+  - **Draft:** rank camp groups by walking distance from our spawn into a gold list (not monoliths) and a gem list, then write a plan into the 1024-byte draft memory.
+  - **Carries** (not tanks or healers; ADCs and mages first) each get a different #1 spot.
+  - **Tanks and healers** copy a carry's lists, so they follow it.
+  - **Play:** from `HOTSPOT_START_ROUND`, `farm_camps` heads for the first available spot among the top `HOTSPOT_TOP_K`, using the gold list before round 150 and the gem list after. Otherwise it farms the nearest camp as before.
+  - **Options:** own half only (`HOTSPOT_SAFETY`), a detour cap (`HOTSPOT_MAX_DETOUR`), shared spots (`HOTSPOT_SQUADS`), and dropping the spot while an enemy is in sight (`HOTSPOT_AVOID_ENEMIES`).
+- **Draft memory gotchas:**
+  - Submit *before* picking: the pick ends the draft turn, and submitting after it is engine error 18.
+  - Only the first draft turn has ~1M fuel; later turns get ~100k. The ranking is computed once on the first turn and cached, and later turns only re-encode the plan.
+- **Draft bugs found (both fixed, kept):** our draft bot sometimes made no pick, so the game picked for us at random. This affected every earlier test, on both sides.
+  - Printing the class weights (`{:?}` on floats) cost ~30k fuel per turn, enough to run out on turns after the first. Removed.
+  - Rolling a class we had no champions left in (a second assassin: Vendetta is the only one) indexed an empty list and panicked. Such classes now get weight 0.
+  - **After the fixes:** every pick was made in 54 test drafts. Win rate vs the old draft code: 9/22, within noise (expected: both sides were affected).
+- **Results:** hot spots on vs off, 180 games: 4 custom maps × both sides × 10 seeds, 8 new maps × both sides × 5 seeds, 20 on old maps.
+
+  | Variant | Custom | New | Old | Total |
+  |---|---|---|---|---|
+  | Default (own half, detour 8, top 3) | 25/80 | 32/80 | 9/20 | 66/180 |
+  | Two squads | 24/80 | 36/80 | 8/20 | 68/180 |
+  | One squad (whole team, planned spots) | 21/80 | 26/80 | 5/20 | 52/180 |
+  | Drop spot while enemies visible | 26/80 | 28/80 | 7/20 | 61/180 |
+  | Start at round 400 | 36/80 | 37/80 | 9/20 | 82/180 |
+  | Tie-breaker only (detour 3, top 8) | 34/80 | 33/80 | 5/20 | 72/180 |
+
+  - Results before the draft fixes are discarded: then the plan only reached the first 1–3 picks.
+  - **Why it loses:**
+    - Spread-out champions lose fights against a team that farms nearest camps and so stays together (one spokes game: 1 kill, 15 deaths).
+    - But the whole team moving together to planned spots is worst of all (52/180). So the bigger problem is the fixed "closest to base" ranking itself: it keeps pulling champions back to base-side camps, while "nearest to me" sweeps outward.
+- **Custom test maps** (`maps/spokes`, `pocket`, `ladder`, `scatter`; layouts and generator in `scripts/mapgen/`):
+  - **spokes** (41×30): equal-distance wolf and gold camps in several directions from spawn, to reward spreading.
+  - **pocket** (45×30): most resources in one walled area next to base, plus a few far camps.
+  - **ladder** (30×80): camps strung along a long map.
+  - **scatter** (60×50): an open general case with every camp kind, including monoliths.
+  - **Generator:** `scripts/mapgen/mapgen.mjs` drives the map editor's engine wasm from Node. A map built from scratch is rejected by the game (engine error 7), so it starts from an existing map of the same size, erases it and draws the ASCII layout. See `scripts/mapgen/README.md`.
+
+## 22. Fights against more than one enemy
+**Uncommitted.** Requested by Tristan: the 1v1 model (entry 10) ignored other champions joining.
+
+- **What changed** (`plan_duel`, `Threats::damage_at_turn`, `ally_helpers`, `losing_fight`):
+  - **Turn-by-turn fight:** the duel is simulated a turn at a time, for at most 40 turns, instead of with fixed damage rates. We hit first each turn.
+  - **Enemies join** (`DUEL_ENEMIES_JOIN`): each visible enemy champion counts once it could have walked into range of our duel tile, i.e. its distance minus its speed × turns elapsed ≤ its range. Walls are ignored, which errs towards danger. The walk to the duel tile uses the same time-aware damage. Camps don't move.
+  - **Allies join** (`DUEL_ALLIES_JOIN`): visible allies add their basic attack on the target once they could reach it.
+  - **Back off** (`FLEE_LOSING_FIGHTS`): when the damage expected on our tile over the next 3 turns, enemies closing in included, would kill us and no visible enemy is winnable, walk towards safe tiles (leaning towards base) instead of trading or farming nearby.
+  - **Engage rule:** close enemies (`ENGAGE_RADIUS`, entry 15) are only fought despite a losing simulation if we'd survive at least `ENGAGE_MIN_SURVIVE_TURNS` = 4 turns.
+  - With joining and back-off off, the model matches the old 1v1 one (apart from the 40-turn cap).
+- **Testing:** 20 games per variant (10 maps × both sides) vs the same bot with all of it off. Chase episodes are runs of chase turns; we count those followed by our death within 10 rounds.
+
+  | Variant | Wins | Chases followed by our death (variant / base) |
+  |---|---|---|
+  | Enemies + allies join, no back-off, no engage guard | 11/20 | (not measured) |
+  | + back-off, seed 1 | 10–11/20 | 12% / 11%; winnable chases 7% / 10%, engage-rule chases 35% / 21% |
+  | + back-off, seed 2 | 7/20 | (not measured) |
+  | **+ back-off + engage guard (kept)** | **10/20** | **8% / 11%**; winnable 7% / 9%, engage-rule 22% / 22% |
+  | + back-off, engage rule removed | 8/20 | 8% / 13% |
+
+  - The new model makes the chases it chooses safer: deaths after a "winnable" chase fell from about 10% to 7%.
+  - The engage rule kept forcing exactly the fights the model now flags as lost to a group, until it was required to survive 4 turns.
+  - Wins and total kills/deaths stay within noise at 20 games. Most deaths aren't after chases.
+- **Follow-ups:**
+  - Enemies out of sight (fog, bushes) still can't be counted. Remembering recently seen enemy positions, like the chase memory in entry 16, would help.
+  - Allies count basic attacks only.
+
 ---
 
 ## Testing recipes

@@ -4,6 +4,7 @@ mod bot;
 mod champions;
 mod common;
 mod constants;
+mod hotspots;
 use std::cell::Cell;
 
 thread_local! {

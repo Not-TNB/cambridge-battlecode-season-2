@@ -24,6 +24,10 @@ pub trait ChampionAi {
     // Whether this champion may buy items away from its spawn.
     fn shops_anywhere(&self) -> bool { false }
 
+    // Free actions each turn that don't use up the turn (heals, shields). Runs before recalls and
+    // fighting, so it also happens while retreating.
+    fn support(&mut self) -> Result<()> { Ok(()) }
+
     // Act against visible enemy champions; return true if that used up the turn.
     fn fight(&mut self) -> Result<bool> { crate::common::fight_enemies() }
 

@@ -64,7 +64,7 @@ impl Bot {
     fn turn(&mut self, ai: &mut dyn ChampionAi) -> Result<()> {
         if self.chosen_stat.is_none() {
             self.chosen_stat = Some(crate::random_number(3) as usize);
-            println!("draft: {}", String::from_utf8_lossy(&cambc::draft_memory().bytes()[..11]));
+            println!("draft memory: {} bytes", cambc::draft_memory().len());
         }
         // Read before writing: little-endian u32 at shared-memory byte offset zero.
         let mut bytes = [0; 4];
@@ -89,6 +89,8 @@ impl Bot {
             }
         }
 
+        ai.support()?;
+
         if !at_spawn && me.health()? < me.max_health()? * 0.35 {
             return crate::common::retreat_and_recall();
         }
@@ -98,6 +100,10 @@ impl Bot {
         // Go home to spend gold and heal once the pull is strong enough (see base_willingness).
         let rounds_away = cambc::round_number()?.saturating_sub(self.last_at_spawn_round);
         if !at_spawn && crate::common::base_willingness(ai.shops_anywhere(), rounds_away)? >= 1.0 {
+            if crate::common::BANK_BEFORE_RECALL && me.gem_count()? > 0 && crate::common::unlocked_altar_within(crate::common::BANK_BEFORE_RECALL_TILES)?
+                && cambc::fuel_remaining()? >= MIN_FUEL_FOR_PATHING {
+                return ai.bank_gems();
+            }
             return crate::common::retreat_and_recall();
         }
 
