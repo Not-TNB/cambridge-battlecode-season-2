@@ -3,7 +3,7 @@
 // Slot 1: attack reset.
 use super::ChampionAi;
 use crate::common::{distance, me};
-use cambc::{ItemType as I, Result, Team};
+use cambc::{ItemType as I, Result};
 
 // Heal an ally in range once its health falls below this fraction of its maximum.
 pub const HEAL_BELOW: f32 = 0.5;
@@ -25,13 +25,14 @@ impl ChampionAi for Willow {
         if !heal.is_ready()? { return Ok(()); }
         let range = info.as_dyn().range()? as i32;
         let mut best = None;
-        for ally in cambc::vision::champions(Some(Team::Ally))? {
-            if ally.champion_name()? == me.champion_name()? || !ally.is_alive()? { continue; }
+        let sight = crate::common::sight()?;
+        for ally in &sight.allies {
+            if !ally.is_alive()? { continue; }
             if distance(ally.position()?, me.position()?) > range { continue; }
             let fraction = ally.health()? / ally.max_health()?;
             if fraction < HEAL_BELOW && best.as_ref().is_none_or(|(_, f)| fraction < *f) { best = Some((ally, fraction)); }
         }
-        if let Some((ally, _)) = best { heal.cast_on(&ally)?; }
+        if let Some((ally, _)) = best { heal.cast_on(ally)?; }
         Ok(())
     }
 }

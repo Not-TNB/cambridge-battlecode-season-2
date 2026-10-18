@@ -3,7 +3,7 @@
 // Slot 1: self-shield, 2.5 x Focus for five turns: cast when we're being hit (support()).
 use super::ChampionAi;
 use crate::common::{distance, me};
-use cambc::{ItemType as I, Result, Team};
+use cambc::{ItemType as I, Result};
 
 // Also shield before being hit when an enemy champion is within this many tiles. 0: only on damage.
 pub const SHIELD_ENEMY_WITHIN: i32 = 2;
@@ -30,7 +30,7 @@ impl ChampionAi for Varg {
         if !shield.is_ready()? { return Ok(()); }
         let mut threatened = hit;
         if !threatened && SHIELD_ENEMY_WITHIN > 0 {
-            for enemy in cambc::vision::champions(Some(Team::Enemy))? {
+            for enemy in &crate::common::sight()?.enemies {
                 if distance(enemy.position()?, me.position()?) <= SHIELD_ENEMY_WITHIN { threatened = true; break; }
             }
         }

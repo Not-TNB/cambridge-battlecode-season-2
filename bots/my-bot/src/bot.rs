@@ -2,10 +2,13 @@
 // decisions live in champions/<name>.rs and shared helpers in common.rs.
 use crate::champions::{self, ChampionAi};
 use crate::common::me;
+use crate::{collect, common, safety};
 use cambc::{ItemType as Item, Result, Team};
 
 // Fuel to keep in hand before starting a pathfinding step (bank_gems / farm).
 const MIN_FUEL_FOR_PATHING: u64 = 40_000;
+// Fuel to keep in hand before end-of-turn extras (sightings, wards; up to ~20k).
+const SPARE_FUEL: u64 = 30_000;
 
 // Per-champion state survives between turns. Pick one stat and keep buying it.
 #[derive(Default)]
@@ -58,6 +61,20 @@ impl Bot {
         let mut ai = self.ai.take().expect("set above");
         let result = self.turn(ai.as_mut());
         self.ai = Some(ai);
+        // With fuel to spare, remember where enemies are (for next turn's safety checks) and ward a
+        // hidden tile nearby. Both are optional, so they wait until the turn's real decisions are
+        // made, and a failed query (e.g. a unit just left vision) is ignored.
+        if cambc::fuel_remaining()? >= SPARE_FUEL && me()?.is_alive()? {
+            let _ = safety::remember_enemies();
+            if cambc::fuel_remaining()? >= SPARE_FUEL { let _ = common::ward_hidden_spots(); }
+        }
+        if common::TRACE {
+            let me = me()?;
+            // Integers only: formatting a float costs ~9k fuel.
+            println!("T {:?} r{} {},{} hp={}/{} gems={} fuel={} |{}", me.champion_name()?, cambc::round_number()?,
+                me.position()?.x, me.position()?.y, me.health()? as i32, me.max_health()? as i32, me.gem_count()?,
+                cambc::fuel_remaining()?, common::take_trace());
+        }
         result
     }
 
@@ -76,15 +93,19 @@ impl Bot {
 
         // Priorities: shop and recall, fight enemies, bank gems, then farm.
         if !me.is_alive()? || me.is_recalling()? || me.is_submitting_gems()? || me.is_teleporting()?
-            || (!me.can_move()? && !me.can_attack()?) { self.was_recalling = true; return Ok(()); }
+            || (!me.can_move()? && !me.can_attack()?) { common::trace("skip"); self.was_recalling = true; return Ok(()); }
 
         let at_spawn = cambc::map::spawn_region(Team::Ally)?.is_set(me.position()?)?;
-        if at_spawn { self.last_at_spawn_round = cambc::round_number()?; }
+        if at_spawn {
+            self.last_at_spawn_round = cambc::round_number()?;
+            collect::forget_lost_camps(); // healed and shopped: judge camp fights afresh
+        }
         if at_spawn || ai.shops_anywhere() { self.buy_items(ai.build())?; }
 
         if self.was_recalling && !me.is_recalling()? {
             self.was_recalling = false;
             if at_spawn {
+                common::trace("wait-spawn");
                 return Ok(());
             }
         }
@@ -92,27 +113,53 @@ impl Bot {
         ai.support()?;
 
         if !at_spawn && me.health()? < me.max_health()? * 0.35 {
-            return crate::common::retreat_and_recall();
+            common::trace("low-hp");
+            return safety::retreat_and_recall();
+        }
+        // Tanks and Willow go home with the damage dealers they escort.
+        if !at_spawn && collect::escort_recalls()? {
+            common::trace("escort-recall");
+            return safety::retreat_and_recall();
         }
 
-        if ai.fight()? { return Ok(()); }
+        // A unit can drop out of vision mid-turn ("Unit is not in vision"); that shouldn't cost
+        // the whole turn, so log it and carry on to banking and farming.
+        match ai.fight() {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(error) => println!("bot error (fight): {error}"),
+        }
+        // Standing on a cleared group's capture: stay until it pays out (collect::CAPTURE_HOLD).
+        let capturing = collect::capturing()?;
 
         // Go home to spend gold and heal once the pull is strong enough (see base_willingness).
         let rounds_away = cambc::round_number()?.saturating_sub(self.last_at_spawn_round);
-        if !at_spawn && crate::common::base_willingness(ai.shops_anywhere(), rounds_away)? >= 1.0 {
+        if !at_spawn && !capturing && crate::common::base_willingness(ai.shops_anywhere(), rounds_away)? >= 1.0
+            && (!safety::GO_HOME_NEEDS_ENEMY || !common::sight()?.enemies.is_empty()) {
             if crate::common::BANK_BEFORE_RECALL && me.gem_count()? > 0 && crate::common::unlocked_altar_within(crate::common::BANK_BEFORE_RECALL_TILES)?
                 && cambc::fuel_remaining()? >= MIN_FUEL_FOR_PATHING {
+                common::trace("bank-first");
                 return ai.bank_gems();
             }
-            return crate::common::retreat_and_recall();
+            common::trace("go-home");
+            return safety::retreat_and_recall();
         }
 
         // Banking and farming pathfind (up to ~37k fuel); skip them rather than run out mid-turn.
-        if cambc::fuel_remaining()? < MIN_FUEL_FOR_PATHING { return Ok(()); }
+        if cambc::fuel_remaining()? < MIN_FUEL_FOR_PATHING { common::trace("no-fuel"); return Ok(()); }
 
-        if ai.should_bank()? {
+        if !capturing && ai.should_bank()? {
+            common::trace("bank");
             ai.bank_gems()?;
             return Ok(());
+        }
+
+        if !capturing {
+            if let Some(goal) = collect::escort_goal()? {
+                common::trace("escort");
+                common::move_towards_closest(goal)?;
+                return Ok(());
+            }
         }
 
         ai.farm()?;

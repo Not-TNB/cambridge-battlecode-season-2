@@ -2,9 +2,11 @@
 mod draft;
 mod bot;
 mod champions;
+mod collect;
 mod common;
 mod constants;
 mod hotspots;
+mod safety;
 use std::cell::Cell;
 
 thread_local! {

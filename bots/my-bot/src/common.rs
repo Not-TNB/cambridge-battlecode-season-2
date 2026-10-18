@@ -8,6 +8,37 @@ pub fn me() -> Result<&'static Champion> {
     Ok(cambc::self_champion()?.expect("play starts after the draft"))
 }
 
+// Debugging: with TRACE on, bot.rs prints one line per turn with our state and the tags of the
+// branches taken (`trace`). Printing costs fuel, so keep it off for real games.
+pub const TRACE: bool = false;
+
+thread_local! {
+    static TRACE_TAGS: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+pub fn trace(tag: &str) {
+    if TRACE { TRACE_TAGS.with(|t| { let mut t = t.borrow_mut(); t.push(' '); t.push_str(tag); }); }
+}
+
+thread_local! {
+    static CHECKPOINTS: std::cell::RefCell<Vec<(&'static str, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+// Record fuel left at a point in the turn (formatted only when the trace is printed, so the
+// measurement itself costs little).
+#[allow(dead_code)] // for profiling: sprinkle in, read the trace, remove
+pub fn checkpoint(tag: &'static str) {
+    if TRACE { CHECKPOINTS.with(|c| c.borrow_mut().push((tag, cambc::fuel_remaining().unwrap_or(0)))); }
+}
+
+pub fn take_trace() -> String {
+    let mut out = TRACE_TAGS.with(|t| std::mem::take(&mut *t.borrow_mut()));
+    for (tag, fuel) in CHECKPOINTS.with(|c| std::mem::take(&mut *c.borrow_mut())) {
+        out.push_str(&format!(" {tag}@{}", fuel / 1000));
+    }
+    out
+}
+
 pub fn distance(a: Vec2, b: Vec2) -> i32 {
     a.chebyshev_distance(b) as i32
 }
@@ -29,16 +60,104 @@ pub fn camp_groups() -> Result<&'static [CampGroup]> {
     Ok(groups)
 }
 
+// What we can see. Listing visible champions costs ~4k fuel and camps ~2k, and a turn used to ask
+// for them up to ten times, which left too little fuel to farm on turns with enemies in sight (the
+// champion stood still). Cached per round and position, since moving changes what we see, and
+// dropped after we attack or cast, which may kill what we saw.
+pub struct Sight {
+    pub enemies: Vec<Champion>,
+    pub allies: Vec<Champion>, // without us
+    pub camps: Vec<Camp>,
+    pub visible: Bitboard,
+}
+
+thread_local! {
+    static SIGHT: std::cell::RefCell<Option<(u32, Vec2, std::rc::Rc<Sight>)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn sight() -> Result<std::rc::Rc<Sight>> {
+    let key = (cambc::round_number()?, me()?.position()?);
+    if let Some(sight) = SIGHT.with(|c| c.borrow().as_ref().filter(|(r, p, _)| (*r, *p) == key).map(|(_, _, s)| s.clone())) {
+        return Ok(sight);
+    }
+    let name = me()?.champion_name()?;
+    let mut allies = cambc::vision::champions(Some(Team::Ally))?;
+    allies.retain(|ally| ally.champion_name().is_ok_and(|n| n != name));
+    // Some enemies on the occupancy board fail unit queries (health, name) with "not in vision",
+    // which ended the turn: keep only ones we can query.
+    let mut enemies = cambc::vision::champions(Some(Team::Enemy))?;
+    enemies.retain(|enemy| enemy.position().is_ok() && enemy.health().is_ok() && enemy.champion_name().is_ok());
+    // Camps never move, so a live camp is the one spawning on its tile.
+    let mut camps = Vec::new();
+    let groups = camp_groups()?;
+    for tile in cambc::vision::camp_tiles()?.positions()? {
+        let Some(index) = group_at(tile)? else { continue };
+        if let Some(camp) = groups[index].camps().iter().find(|c| c.spawn_position() == tile) { camps.push(camp.clone()); }
+    }
+    let sight = std::rc::Rc::new(Sight { enemies, allies, camps, visible: cambc::vision::visible_tiles()? });
+    SIGHT.with(|c| *c.borrow_mut() = Some((key.0, key.1, sight.clone())));
+    Ok(sight)
+}
+
+pub fn forget_sight() {
+    SIGHT.with(|c| *c.borrow_mut() = None);
+    forget_blocked();
+}
+
+// Index into camp_groups() of the group whose camp spawns on `tile`, if any (membership is fixed).
+pub fn group_at(tile: Vec2) -> Result<Option<usize>> {
+    thread_local! {
+        static BY_TILE: OnceCell<Vec<((i32, i32), usize)>> = const { OnceCell::new() };
+    }
+    if BY_TILE.with(|c| c.get().is_none()) {
+        let mut by_tile = Vec::new();
+        for (index, group) in camp_groups()?.iter().enumerate() {
+            for camp in group.camps() { by_tile.push(((camp.spawn_position().x, camp.spawn_position().y), index)); }
+        }
+        by_tile.sort();
+        BY_TILE.with(|c| { let _ = c.set(by_tile); });
+    }
+    Ok(BY_TILE.with(|c| {
+        let by_tile = c.get().expect("set above");
+        by_tile.binary_search_by_key(&(tile.x, tile.y), |&(t, _)| t).ok().map(|i| by_tile[i].1)
+    }))
+}
+
+// Tiles we can't walk onto: terrain (walls, holes, altars, the enemy spawn; fixed, so combined
+// once) plus visible occupants. Each new Bitboard costs ~2k fuel and this was rebuilt from seven
+// several times a turn, so it's cached per round and position and dropped with forget_sight (and
+// after a dash attempt, which can reveal a hidden unit).
+thread_local! {
+    static BLOCKED: std::cell::RefCell<Option<(u32, Vec2, Bitboard)>> = const { std::cell::RefCell::new(None) };
+}
+
 pub fn blocked_tiles() -> Result<Bitboard> {
-    // Combine terrain and visible occupants using native bitboard operations.
-    let mut blocked = cambc::map::walls()?.clone();
-    for mask in [cambc::map::holes()?.clone(), cambc::map::altars()?.clone(),
-        cambc::map::spawn_region(Team::Enemy)?.clone(), cambc::vision::champion_tiles(None)?,
-        cambc::vision::camp_tiles()?, cambc::vision::teleport_tiles()?] {
+    thread_local! {
+        static TERRAIN: OnceCell<&'static Bitboard> = const { OnceCell::new() };
+    }
+    let key = (cambc::round_number()?, me()?.position()?);
+    if let Some(blocked) = BLOCKED.with(|c| c.borrow().as_ref().filter(|(r, p, _)| (*r, *p) == key).map(|(_, _, b)| b.clone())) {
+        return Ok(blocked);
+    }
+    if TERRAIN.with(|c| c.get().is_none()) {
+        let mut terrain = cambc::map::walls()?.clone();
+        terrain.union_assign(cambc::map::holes()?)?;
+        terrain.union_assign(cambc::map::altars()?)?;
+        terrain.union_assign(cambc::map::spawn_region(Team::Enemy)?)?;
+        let terrain: &'static Bitboard = Box::leak(Box::new(terrain));
+        TERRAIN.with(|c| { let _ = c.set(terrain); });
+    }
+    let mut blocked = TERRAIN.with(|c| Bitboard::clone(c.get().expect("set above")));
+    for mask in [cambc::vision::champion_tiles(None)?, cambc::vision::camp_tiles()?, cambc::vision::teleport_tiles()?] {
         blocked.union_assign(&mask)?;
     }
-    blocked.set(me()?.position()?, false)?;
+    blocked.set(key.1, false)?;
+    BLOCKED.with(|c| *c.borrow_mut() = Some((key.0, key.1, blocked.clone())));
     Ok(blocked)
+}
+
+fn forget_blocked() {
+    BLOCKED.with(|c| *c.borrow_mut() = None);
 }
 
 // Champions with a dash use it to travel when the goal is at least this many steps away and no
@@ -65,7 +184,11 @@ fn dash_to_best(dash: &Ability, blocked: &Bitboard, score: impl Fn(Vec2) -> Resu
     }
     // false: an unseen unit blocks the landing tile; just walk instead. A unit our occupancy view
     // hasn't caught up with makes it an error instead, which changes nothing: treat it the same.
-    Ok(best.0 != origin && dash.cast_at(best.0).unwrap_or(false))
+    // Either way the attempt may have revealed a unit, so what's blocked must be looked up again.
+    if best.0 == origin { return Ok(false); }
+    let dashed = dash.cast_at(best.0).unwrap_or(false);
+    forget_sight();
+    Ok(dashed)
 }
 
 // Take one ordinary step. Our occupancy view can lag a unit that just appeared (e.g. right after a
@@ -76,7 +199,7 @@ fn step_to(tile: Vec2) -> bool {
 }
 
 pub fn move_towards_closest(goals: Bitboard) -> Result<bool> {
-    let may_dash = DASH_TRAVEL_MIN_STEPS > 0 && cambc::vision::champions(Some(Team::Enemy))?.is_empty();
+    let may_dash = DASH_TRAVEL_MIN_STEPS > 0 && sight()?.enemies.is_empty();
     move_towards_closest_with_pull(goals, |_| 0.0, may_dash)
 }
 
@@ -136,6 +259,7 @@ pub fn cast_at_camp(ability: &Ability, camp: &Camp) -> Result<bool> {
         return Ok(ability.cast_untargeted()? && attack_camp_in_range()?);
     }
     if distance(me.position()?, target) as f32 > info.as_dyn().range()? { return Ok(false); }
+    forget_sight();
     if ability.can_target_camps()? { return ability.cast_on(camp); }
     if ability.can_target_ground()? { return ability.cast_at(target); }
     Ok(false)
@@ -146,16 +270,19 @@ pub fn cast_at_camp(ability: &Ability, camp: &Camp) -> Result<bool> {
 // Returns true if we cast something that excludes walking (so the turn's move is used up).
 fn cast_abilities_on_camps(moved: bool) -> Result<bool> {
     let me = me()?;
-    if !me.can_cast()? || !cambc::vision::champions(Some(Team::Enemy))?.is_empty() {
+    let sight = sight()?;
+    if !me.can_cast()? || !sight.enemies.is_empty() {
         return Ok(false);
     }
-    let camps = cambc::vision::camps()?;
+    let mut camps = Vec::new();
+    for camp in &sight.camps { camps.push((camp.health()?, camp)); }
+    camps.sort_by(|a, b| a.0.total_cmp(&b.0));
     for ability in me.abilities() {
         if !ability.is_ready()? || (!is_damaging(ability) && !ability.is_attack_reset()) { continue; }
         let blocks_walking = ability.info()?
             .is_some_and(|info| info.as_dyn().is_exclusive_with_movement());
         if moved && blocks_walking { continue; }
-        for camp in &camps {
+        for &(_, camp) in &camps {
             if cast_at_camp(ability, camp)? { return Ok(blocks_walking); }
         }
     }
@@ -171,6 +298,7 @@ pub fn attack_if_in_range(target: &Unit) -> Result<bool> {
         return Ok(false);
     }
     me.attack(target)?;
+    forget_sight();
     Ok(true)
 }
 
@@ -187,70 +315,169 @@ pub fn cast_at_enemy(ability: &Ability, enemy: &Champion) -> Result<bool> {
     if !enemy.is_visible()? || enemy.health()? <= 0.0 { return Ok(false); }
     let target = enemy.position()?;
     if me()?.position()?.chebyshev_distance(target) as f32 > info.as_dyn().range()? { return Ok(false); }
+    forget_sight();
     if ability.can_target_enemies()? { return ability.cast_on(enemy); }
     if ability.can_target_ground()? { return ability.cast_at(target); }
     Ok(false)
 }
 
+// Enemies standing on their own spawn heal to full every turn, so trading blows with them (or
+// chasing them there) gets nowhere: on maps where the spawns touch, both teams stood at the border
+// all game. They still count as threats, just not as targets.
+pub const IGNORE_ENEMIES_ON_SPAWN: bool = true;
+
+// Visible enemies worth fighting, weakest first (health read once per enemy: each read is a host call).
+pub fn fightable_enemies() -> Result<Vec<Champion>> {
+    let spawn = cambc::map::spawn_region(Team::Enemy)?;
+    let mut by_health = Vec::new();
+    for enemy in &sight()?.enemies {
+        if IGNORE_ENEMIES_ON_SPAWN && spawn.is_set(enemy.position()?)? { continue; }
+        by_health.push((enemy.health().unwrap_or(f32::MAX), enemy.clone()));
+    }
+    by_health.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(by_health.into_iter().map(|(_, e)| e).collect())
+}
+
+// With nothing about to reach us (safety::imminent_danger) and something safe to collect nearby
+// (collect::GREEDY), collect it instead of chasing.
+fn collect_instead() -> Result<bool> {
+    Ok(crate::collect::GREEDY && crate::collect::GREEDY_BEFORE_CHASE && farm_plan()?.greedy && !crate::safety::imminent_danger()?)
+}
+
 // Fight visible enemies: strike anything already in reach; otherwise chase an enemy we expect to
-// beat in a 1v1 after walking to it, or keep after one we just lost sight of.
+// beat in a 1v1 after walking to it, or keep after one we just lost sight of. Fights we'd lose are
+// retreated from, captures are held, and safe camps nearby come before chasing.
 // Returns whether we attacked, cast or chased this turn.
 pub fn fight_enemies() -> Result<bool> {
-    let mut enemies = cambc::vision::champions(Some(Team::Enemy))?;
+    let enemies = fightable_enemies()?;
     refresh_chase_target(&enemies)?;
-    if enemies.is_empty() { return follow_lost_target(); }
-    // Focus the weakest enemy first.
-    enemies.sort_by(|a, b| a.health().unwrap_or(f32::MAX).total_cmp(&b.health().unwrap_or(f32::MAX)));
-
-    if kite_melee(&enemies)? { return Ok(true); }
-    if FLEE_LOSING_FIGHTS && losing_fight(&enemies)? && flee()? {
-        strike(&enemies, true)?; // melee may still hit something on the way out
-        return Ok(true);
+    if enemies.is_empty() {
+        if collect_instead()? { return Ok(false); }
+        return follow_lost_target();
     }
-    if strike(&enemies, false)? { return Ok(true); }
+    let standoff = standoff_key(&enemies)?;
+    if STANDOFF.with(|s| s.borrow().as_ref() == Some(&standoff)) {
+        trace("standoff");
+        return Ok(false);
+    }
+    let acted = fight_visible(&enemies)?;
+    // Remember a decision not to act, for next turn (see STANDOFF).
+    STANDOFF.with(|s| *s.borrow_mut() = (!acted).then(|| (standoff.0 + 1, standoff.1, standoff.2, standoff.3)));
+    Ok(acted)
+}
 
-    let Some(step) = choose_chase_step(&enemies)? else { return follow_lost_target() };
-    if dash_at_chase_target(&enemies)? {
+// A standoff: enemies in sight that we neither chase nor back off from. Deciding that again costs
+// ~30-60k fuel (threats, walking distances, a fight simulation per enemy), which left too little to
+// farm, so the champion stood still (175 turns on orchard). If nothing has changed since last
+// turn's decision not to act (our tile and health, each enemy's tile and health, none close enough
+// to hit us or be hit, STANDOFF_CLEAR tiles), skip straight to farming.
+const STANDOFF_CLEAR: i32 = 4;
+
+type StandoffKey = (u32, Vec2, i32, Vec<(ChampionType, Vec2, i32)>);
+
+thread_local! {
+    static STANDOFF: std::cell::RefCell<Option<StandoffKey>> = const { std::cell::RefCell::new(None) };
+}
+
+fn standoff_key(enemies: &[Champion]) -> Result<StandoffKey> {
+    let me = me()?;
+    let here = me.position()?;
+    let mut seen = Vec::new();
+    for enemy in enemies {
+        let p = enemy.position()?;
+        // Too close to call it a standoff: make sure the key never matches.
+        let health = if distance(p, here) <= STANDOFF_CLEAR { i32::MIN } else { enemy.health()? as i32 };
+        seen.push((enemy.champion_name()?, p, health));
+    }
+    Ok((cambc::round_number()?, here, me.health()? as i32, seen))
+}
+
+// The fight decisions proper, for enemies in sight. Returns whether we acted.
+fn fight_visible(enemies: &[Champion]) -> Result<bool> {
+    if kite_melee(enemies)? { trace("kite"); return Ok(true); }
+    if FLEE_LOSING_FIGHTS && losing_fight(enemies)? {
+        if crate::safety::retreat_from_fight()? { strike(enemies, true)?; return Ok(true); }
+        if keep_distance(enemies)? { return Ok(true); }
+    }
+    if strike(enemies, false)? { trace("strike"); return Ok(true); }
+    if crate::collect::capturing()? { trace("hold-capture"); return Ok(false); }
+    if collect_instead()? { trace("greedy"); return Ok(false); }
+
+    let Some(step) = choose_chase_step(enemies)? else { return follow_lost_target() };
+    if dash_at_chase_target(enemies)? {
+        trace("chase-dash");
         // Close the rest on foot (melee can still attack after walking); ranged just shoots if it can.
         if me()?.can_move()? && me()?.attack_range()? <= 1 {
             if let Some(target) = chase_target() { move_towards_closest_with_pull(tiles_around(target.position, 1)?, |_| 0.0, false)?; }
         }
-        strike(&enemies, true)?;
+        strike(enemies, true)?;
         return Ok(true);
     }
     // Step along the planned path; false means an unseen unit blocked it, so try again next turn.
     // A failed dash may have revealed a unit on that tile, which would make the step an error.
-    if !me()?.can_move()? || !step_to(step) { return Ok(false); }
+    if !me()?.can_move()? || !step_to(step) { trace("chase-blocked"); return Ok(false); }
+    trace("chase");
     // Melee champions can still attack after stepping into range.
-    strike(&enemies, true)?;
+    strike(enemies, true)?;
     Ok(true)
 }
 
 // Back off from fights we'd lose: when the damage expected on our tile over the next
 // FLEE_HORIZON_TURNS turns (enemies closing in included) would kill us and no enemy in sight is
-// winnable (see plan_duel), walk towards safety instead of trading blows or farming nearby.
+// winnable (see plan_duel), retreat to safer ground (safety::retreat_from_fight), or if that can't
+// move us, stay just out of the enemies' reach (keep_distance), instead of trading blows or
+// farming nearby.
 pub const FLEE_LOSING_FIGHTS: bool = true;
 const FLEE_HORIZON_TURNS: u32 = 3;
 
 fn losing_fight(enemies: &[Champion]) -> Result<bool> {
     let me = me()?;
     let here = me.position()?;
-    let threats = Threats::scan()?;
-    let danger: f32 = (0..FLEE_HORIZON_TURNS).map(|t| threats.damage_at_turn(here, t)).sum();
+    let view = fight_view()?;
+    let danger: f32 = (0..FLEE_HORIZON_TURNS).map(|t| view.threats.damage_at_turn(here, t)).sum();
     if danger < me.health()? { return Ok(false); }
-    let allies = ally_helpers()?;
-    let from_me = WalkGrid::from(here, &blocked_tiles()?, MAX_CHASE_STEPS)?;
     for enemy in enemies {
-        if plan_duel(enemy, &threats, &allies, &from_me)?.is_some_and(|duel| duel.winnable) { return Ok(false); }
+        if plan_duel(enemy, &view.threats, &view.allies, &view.from_me)?.is_some_and(|duel| duel.winnable) { return Ok(false); }
     }
     Ok(true)
 }
 
-// Step towards the nearest tile no threat reaches, leaning towards our base (as when retreating).
-fn flee() -> Result<bool> {
-    let threats = Threats::scan()?;
-    let home = ally_spawn_centre()?;
-    move_towards_closest_with_pull(threats.safe_tiles()?, |tile| RETREAT_HOME_PULL * distance(tile, home) as f32, true)
+// Stay just outside every visible enemy's reach: its attack range plus one turn of walking, so it
+// can't step in and hit us next turn. Already outside: hold position (shooting anything in our own
+// range). Inside: step to the reachable tile that gets outside while staying as close as possible
+// (or, if none does, gets furthest away). No dashing: we keep our distance, we don't run.
+// Returns whether we acted (moved, attacked or held).
+fn keep_distance(enemies: &[Champion]) -> Result<bool> {
+    let me = me()?;
+    let origin = me.position()?;
+    let mut reach = Vec::new();
+    for enemy in enemies {
+        reach.push((enemy.position()?, enemy.attack_range()? + enemy.base_stats()?.base_move_speed as i32));
+    }
+    // > 0: no enemy can hit this tile next turn; larger means further out than needed.
+    let gap = |tile: Vec2| reach.iter().map(|&(p, r)| distance(p, tile) - r).min().unwrap_or(i32::MAX);
+    if gap(origin) > 0 {
+        trace("keep-hold");
+        strike(enemies, false)?;
+        return Ok(true);
+    }
+    if !me.can_move()? { return Ok(false); }
+    let view = fight_view()?;
+    // Prefer tiles outside reach, then the smallest such gap (stay close), then less damage.
+    let score = |tile: Vec2| {
+        let g = gap(tile);
+        (g > 0, if g > 0 { -g } else { g }, -view.threats.damage_at(tile))
+    };
+    let mut step = origin;
+    let mut best = score(origin);
+    for tile in view.blocked.reachable_tiles(origin, me.base_stats()?.base_move_speed as u16)?.positions()? {
+        let s = score(tile);
+        if s.partial_cmp(&best) == Some(std::cmp::Ordering::Greater) { step = tile; best = s; }
+    }
+    if step != origin && !step_to(step) { return Ok(false); }
+    trace(if step == origin { "keep-stuck" } else { "keep-step" });
+    strike(enemies, true)?; // melee may still hit something in reach after the step
+    Ok(true)
 }
 
 // Ranged champions step away from a melee enemy this close: it could walk in and hit us next turn.
@@ -274,14 +501,14 @@ fn kite_melee(enemies: &[Champion]) -> Result<bool> {
 
     let mut targets = Vec::new();
     for enemy in enemies { targets.push(enemy.position()?); }
-    let threats = Threats::scan()?;
+    let view = fight_view()?;
     let score = |tile: Vec2| {
         let in_range = targets.iter().any(|&t| distance(t, tile) <= range);
-        (gap(tile).min(range), -threats.damage_at(tile), in_range)
+        (gap(tile).min(range), -view.threats.damage_at(tile), in_range)
     };
     let mut step = origin;
     let mut best = score(origin);
-    for tile in blocked_tiles()?.reachable_tiles(origin, me.base_stats()?.base_move_speed as u16)?.positions()? {
+    for tile in view.blocked.reachable_tiles(origin, me.base_stats()?.base_move_speed as u16)?.positions()? {
         let s = score(tile);
         if s.partial_cmp(&best) == Some(std::cmp::Ordering::Greater) { step = tile; best = s; }
     }
@@ -333,7 +560,7 @@ pub const ENGAGE_RADIUS: i32 = 3;
 pub const ENGAGE_MIN_SURVIVE_TURNS: u32 = 4;
 
 // Enemies further than this many steps away are never chased; also bounds the pathfinding cost.
-const MAX_CHASE_STEPS: u16 = 16;
+const MAX_CHASE_STEPS: u16 = 12;
 
 // After losing sight of the chase target, keep walking to where we last saw it for this many
 // rounds. Without it, a path that bends away from the enemy drops it out of vision, we go back to
@@ -388,7 +615,8 @@ fn follow_lost_target() -> Result<bool> {
         set_chase_target(None)?;
         return Ok(false);
     }
-    if WARD_LOST_TARGET { ward_hidden_tile(target.position)?; }
+    trace("follow-lost");
+    if WARD_LOST_TARGET { ward_hidden_tile(target.position)?; forget_sight(); }
     Ok(move_towards_closest(tiles_around(target.position, 1)?)?)
 }
 
@@ -414,34 +642,36 @@ fn ward_hidden_tile(spot: Vec2) -> Result<()> {
 }
 
 // Keep the current target while we still expect to win against it; otherwise pick the winnable
-// enemy we can finish fastest (walking turns + turns to kill). Returns the next tile to step to,
-// or None if no enemy is worth chasing (or we are already in range of the one that is).
+// enemy with the least health, then the one we can finish fastest (walking turns + turns to kill).
+// Returns the next tile to step to, or None if no enemy is worth chasing (or we are already in
+// range of the one that is).
 fn choose_chase_step(enemies: &[Champion]) -> Result<Option<Vec2>> {
-    let threats = Threats::scan()?;
-    let allies = ally_helpers()?;
-    let blocked = blocked_tiles()?;
-    // Walking distance from our tile to everywhere, computed once and shared by every enemy.
-    let from_me = WalkGrid::from(me()?.position()?, &blocked, MAX_CHASE_STEPS)?;
+    // Walking distances from our tile etc., shared by every enemy (and with losing_fight).
+    let view = fight_view()?;
+    let (threats, allies, from_me) = (&view.threats, &view.allies, &view.from_me);
     let current = chase_target().map(|t| t.name);
     let mut current_visible = false;
-    let mut best: Option<(ChampionType, Vec2, Option<Vec2>, u32)> = None;
+    let mut best: Option<(ChampionType, Vec2, Option<Vec2>, u32, f32)> = None;
     for enemy in enemies {
-        let Some(duel) = plan_duel(enemy, &threats, &allies, &from_me)? else { continue };
+        let Some(duel) = plan_duel(enemy, threats, allies, from_me)? else { continue };
         // Close enemies are fought even when the fight looks lost, unless we'd die within
         // ENGAGE_MIN_SURVIVE_TURNS (other enemies joining make those fights deadly).
         let close = distance(me()?.position()?, enemy.position()?) <= ENGAGE_RADIUS && duel.hp_after_walk > 0.0
             && duel.die_turns >= ENGAGE_MIN_SURVIVE_TURNS;
         if !duel.winnable && !close { continue; }
+        if !crate::collect::escort_allows_chase(enemy.position()?)? { continue; }
         let name = enemy.champion_name()?;
         if Some(name) == current { return Ok(duel.next_step); }
+        // Weakest first (enemies come sorted by health), then quickest to finish.
         let total = duel.walk_turns + duel.kill_turns;
-        if best.is_none_or(|(_, _, _, t)| total < t) { best = Some((name, enemy.position()?, duel.next_step, total)); }
+        let health = enemy.health().unwrap_or(f32::MAX);
+        if best.is_none_or(|(_, _, _, t, h)| (health, total) < (h, t)) { best = Some((name, enemy.position()?, duel.next_step, total, health)); }
     }
     for enemy in enemies { current_visible |= Some(enemy.champion_name()?) == current; }
     // Nothing worth chasing in sight: keep the memory of a target that went out of view.
     if best.is_none() && !current_visible { return Ok(None); }
-    set_chase_target(best.map(|(name, position, _, _)| (name, position)))?;
-    Ok(best.and_then(|(_, _, step, _)| step))
+    set_chase_target(best.map(|(name, position, _, _, _)| (name, position)))?;
+    Ok(best.and_then(|(_, _, step, _, _)| step))
 }
 
 // Simulated chase: walk the shortest path to a tile within our attack range of `enemy`, taking
@@ -516,7 +746,7 @@ pub fn ally_helpers() -> Result<Vec<Helper>> {
     let mut helpers = Vec::new();
     if !DUEL_ALLIES_JOIN { return Ok(helpers); }
     let me = me()?.champion_name()?;
-    for ally in cambc::vision::champions(Some(Team::Ally))? {
+    for ally in &sight()?.allies {
         if ally.champion_name()? == me || !ally.is_alive()? { continue; }
         helpers.push(Helper {
             origin: ally.position()?,
@@ -569,17 +799,28 @@ pub fn plan_duel(enemy: &Champion, threats: &Threats, allies: &[Helper], from_me
     // then everything in range of us hits back. Damage per turn is a basic attack plus abilities
     // averaged over their cooldown.
     let outgoing = turn_damage_against(enemy)?;
-    let (mut hp, mut target_hp) = (hp_after_walk, enemy.health()?);
+    // When each threat starts reaching the duel tile and each ally the target (in turns from now),
+    // so the loop below only adds up what has arrived. Same as damage_at_turn, computed once.
+    let arrival = |dist: i32, range: i32, speed: i32| -> u32 {
+        if dist <= range { 0 } else if speed <= 0 { u32::MAX } else { ((dist - range) as u32).div_ceil(speed as u32) }
+    };
+    // Sorted by arrival, so each turn only adds what newly arrived (pure Rust work costs fuel too).
+    let mut incoming: Vec<(u32, f32)> = threats.0.iter().map(|t| (arrival(distance(t.origin, duel_tile), t.range, t.speed), t.damage)).collect();
+    let mut help: Vec<(u32, f32)> = allies.iter().map(|a| (arrival(distance(a.origin, target), a.range, a.speed), a.damage)).collect();
+    incoming.sort_by_key(|&(t, _)| t);
+    help.sort_by_key(|&(t, _)| t);
+    let Ok(target_hp) = enemy.health() else { return Ok(None) };
+    let (mut hp, mut target_hp) = (hp_after_walk, target_hp);
     let (mut kill_turns, mut die_turns) = (u32::MAX, u32::MAX);
+    let (mut hit_us, mut hit_target, mut next_in, mut next_help) = (0.0, outgoing, 0, 0);
     if hp > 0.0 {
         for turn in 1..=DUEL_MAX_TURNS {
             let elapsed = walk_turns + turn - 1;
-            let help: f32 = allies.iter()
-                .filter(|a| distance(a.origin, target) - a.speed * elapsed as i32 <= a.range)
-                .map(|a| a.damage).sum();
-            target_hp -= outgoing + help;
+            while next_help < help.len() && help[next_help].0 <= elapsed { hit_target += help[next_help].1; next_help += 1; }
+            while next_in < incoming.len() && incoming[next_in].0 <= elapsed { hit_us += incoming[next_in].1; next_in += 1; }
+            target_hp -= hit_target;
             if target_hp <= 0.0 { kill_turns = turn; break; }
-            hp -= threats.damage_at_turn(duel_tile, elapsed);
+            hp -= hit_us;
             if hp <= 0.0 { die_turns = turn; break; }
         }
     }
@@ -613,7 +854,7 @@ fn turn_damage_against(enemy: &Champion) -> Result<f32> {
 
 // Basic attack, then a ready damaging ability, else an attack reset to attack a second time.
 // After a move (`moved`), abilities that exclude walking are skipped. Returns whether we acted.
-fn strike(enemies: &[Champion], moved: bool) -> Result<bool> {
+pub fn strike(enemies: &[Champion], moved: bool) -> Result<bool> {
     let mut attacked = None;
     for enemy in enemies {
         if attack_if_in_range(enemy)? { attacked = Some(enemy); break; }
@@ -641,8 +882,39 @@ fn strike(enemies: &[Champion], moved: bool) -> Result<bool> {
     Ok(attacked.is_some())
 }
 
+// What the fight decisions share within a turn: threats, allies, blocked tiles and walking distances
+// from our tile. Building it costs ~25k fuel, and the losing-fight check, kiting and the chase
+// decision each used to build their own, which left too little fuel to farm on turns where an
+// enemy was in sight but not worth chasing (the champion then stood still). Cached per round and
+// position, so it's rebuilt if we move.
+pub struct FightView {
+    pub threats: Threats,
+    pub allies: Vec<Helper>,
+    pub blocked: Bitboard,
+    pub from_me: WalkGrid,
+}
+
+thread_local! {
+    static FIGHT_VIEW: std::cell::RefCell<Option<(u32, Vec2, std::rc::Rc<FightView>)>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn fight_view() -> Result<std::rc::Rc<FightView>> {
+    let key = (cambc::round_number()?, me()?.position()?);
+    if let Some(view) = FIGHT_VIEW.with(|c| c.borrow().as_ref().filter(|(r, p, _)| (*r, *p) == key).map(|(_, _, v)| v.clone())) {
+        return Ok(view);
+    }
+    let blocked = blocked_tiles()?;
+    let threats = Threats::scan()?;
+    let allies = ally_helpers()?;
+    let from_me = WalkGrid::from(key.1, &blocked, MAX_CHASE_STEPS)?;
+    let view = std::rc::Rc::new(FightView { threats, allies, from_me, blocked });
+    FIGHT_VIEW.with(|c| *c.borrow_mut() = Some((key.0, key.1, view.clone())));
+    Ok(view)
+}
+
 // One source of damage: hits any tile within Chebyshev `range` of `origin` for `damage` per turn.
 // Enemy champions can walk `speed` tiles a turn towards us; camps never move (speed 0).
+#[derive(Clone)]
 pub struct Threat {
     pub origin: Vec2,
     pub range: i32,
@@ -672,15 +944,6 @@ impl Threats {
     pub fn damage_at_turn(&self, tile: Vec2, turns: u32) -> f32 {
         self.0.iter().filter(|t| distance(t.origin, tile) - t.speed * turns as i32 <= t.range).map(|t| t.damage).sum()
     }
-
-    // Tiles no threat can reach (expected damage 0).
-    pub fn safe_tiles(&self) -> Result<Bitboard> {
-        let mut danger = Bitboard::new()?;
-        for threat in self.0.iter().filter(|t| t.damage > 0.0) {
-            danger.draw_chebyshev(threat.origin, threat.range as f32)?;
-        }
-        danger.complement()
-    }
 }
 
 // Expected damage our champion would take standing on `tile` for one turn, from what we can see:
@@ -695,22 +958,29 @@ pub fn expected_dmg(tile: Vec2) -> Result<f32> {
 // Awake camps attack once per round; camps never move, so a live camp sits on its spawn tile.
 // There is no "awake" query: a group counts as awake once a visible member is damaged or missing
 // (dead). Groups that went back to sleep after two quiet rounds are still counted, overestimating.
+// Only groups with a camp in sight can hurt us, so start from the visible camps.
 fn camp_threats(threats: &mut Vec<Threat>) -> Result<()> {
-    let live_camps = cambc::vision::camp_tiles()?;
-    let visible = cambc::vision::visible_tiles()?;
-    for group in camp_groups()? {
+    let sight = sight()?;
+    if sight.camps.is_empty() { return Ok(()); }
+    let visible = &sight.visible;
+    let groups = camp_groups()?;
+    let mut done = Vec::new();
+    for camp in &sight.camps {
+        let Some(index) = group_at(camp.spawn_position())? else { continue };
+        if done.contains(&index) { continue; }
+        done.push(index);
         let mut live = Vec::new();
         let mut awake = false;
-        for camp in group.camps() {
-            let spawn = camp.spawn_position();
-            if !visible.is_set(spawn)? { continue; }
-            if !live_camps.is_set(spawn)? { awake = true; continue; }
-            if camp.health()? < camp.max_health()? { awake = true; }
-            live.push(camp);
+        for member in groups[index].camps() {
+            let spawn = member.spawn_position();
+            match sight.camps.iter().find(|c| c.spawn_position() == spawn) {
+                Some(c) => { if c.health()? < c.max_health()? { awake = true; } live.push(c); }
+                None => if visible.is_set(spawn)? { awake = true; }, // seen dead
+            }
         }
         if !awake { continue; }
-        for camp in live {
-            threats.push(Threat { origin: camp.spawn_position(), range: camp.attack_range()?, damage: camp.strength()?, speed: 0 });
+        for c in live {
+            threats.push(Threat { origin: c.spawn_position(), range: c.attack_range()?, damage: c.strength()?, speed: 0 });
         }
     }
     Ok(())
@@ -720,23 +990,48 @@ fn camp_threats(threats: &mut Vec<Threat>) -> Result<()> {
 // (1/8 of a hit per turn) rather than assuming a ready ability is cast now; an attack reset is
 // worth 1/8 of an extra basic attack.
 fn enemy_threats(threats: &mut Vec<Threat>) -> Result<()> {
+    for (_, of_enemy) in enemy_threats_by_name()?.iter() { threats.extend(of_enemy.iter().cloned()); }
+    Ok(())
+}
+
+// Each visible enemy's threats, read once per round and position (each costs a dozen host calls)
+// and shared by the threat scan and the sightings memory (safety::remember_enemies).
+pub fn enemy_threats_by_name() -> Result<std::rc::Rc<Vec<(ChampionType, Vec<Threat>)>>> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<(u32, Vec2, std::rc::Rc<Vec<(ChampionType, Vec<Threat>)>>)>> = const { std::cell::RefCell::new(None) };
+    }
+    let key = (cambc::round_number()?, me()?.position()?);
+    if let Some(cached) = CACHE.with(|c| c.borrow().as_ref().filter(|(r, p, _)| (*r, *p) == key).map(|(_, _, t)| t.clone())) {
+        return Ok(cached);
+    }
+    let mut all = Vec::new();
+    for enemy in &sight()?.enemies {
+        let mut threats = Vec::new();
+        let Ok(name) = enemy.champion_name() else { continue };
+        if enemy_threats_of(enemy, &mut threats).is_err() { continue; }
+        all.push((name, threats));
+    }
+    let all = std::rc::Rc::new(all);
+    CACHE.with(|c| *c.borrow_mut() = Some((key.0, key.1, all.clone())));
+    Ok(all)
+}
+
+pub fn enemy_threats_of(enemy: &Champion, threats: &mut Vec<Threat>) -> Result<()> {
     let me = me()?;
-    for enemy in cambc::vision::champions(Some(Team::Enemy))? {
-        let origin = enemy.position()?;
-        let attack_range = enemy.attack_range()?;
-        let strength = enemy.strength()?;
-        let speed = if DUEL_ENEMIES_JOIN { enemy.base_stats()?.base_move_speed as i32 } else { 0 };
-        threats.push(Threat { origin, range: attack_range, damage: strength, speed });
-        for ability in enemy.abilities() {
-            let Some(info) = ability.info()? else { continue };
-            let per_turn = 1.0 / info.as_dyn().max_cooldown().max(1) as f32;
-            if ability.is_attack_reset() {
-                threats.push(Threat { origin, range: attack_range, damage: strength * per_turn, speed });
-            } else if is_damaging(ability) {
-                // Engine prediction includes our mitigation and shields; fall back to raw damage.
-                let hit = ability.damage_amount_against(me).or_else(|_| ability.damage_amount())?;
-                threats.push(Threat { origin, range: info.as_dyn().range()? as i32, damage: hit * per_turn, speed });
-            }
+    let origin = enemy.position()?;
+    let attack_range = enemy.attack_range()?;
+    let strength = enemy.strength()?;
+    let speed = if DUEL_ENEMIES_JOIN { enemy.base_stats()?.base_move_speed as i32 } else { 0 };
+    threats.push(Threat { origin, range: attack_range, damage: strength, speed });
+    for ability in enemy.abilities() {
+        let Some(info) = ability.info()? else { continue };
+        let per_turn = 1.0 / info.as_dyn().max_cooldown().max(1) as f32;
+        if ability.is_attack_reset() {
+            threats.push(Threat { origin, range: attack_range, damage: strength * per_turn, speed });
+        } else if is_damaging(ability) {
+            // Engine prediction includes our mitigation and shields; fall back to raw damage.
+            let hit = ability.damage_amount_against(me).or_else(|_| ability.damage_amount())?;
+            threats.push(Threat { origin, range: info.as_dyn().range()? as i32, damage: hit * per_turn, speed });
         }
     }
     Ok(())
@@ -745,29 +1040,14 @@ fn enemy_threats(threats: &mut Vec<Threat>) -> Result<()> {
 // How much a step closer to our spawn is worth, in steps closer to safety, when fleeing. Below 1,
 // so every step still makes progress toward safety; without it, ties between equally close safe
 // tiles went to whichever came first in tile order, so we fled bottom-right.
-const RETREAT_HOME_PULL: f32 = 0.5;
+pub const RETREAT_HOME_PULL: f32 = 0.5;
 
 // Centre of our spawn region.
-fn ally_spawn_centre() -> Result<Vec2> {
+pub fn ally_spawn_centre() -> Result<Vec2> {
     let tiles = cambc::map::spawn_region(Team::Ally)?.positions()?;
     let n = tiles.len().max(1) as i32;
     let (x, y) = tiles.iter().fold((0, 0), |(x, y), t| (x + t.x, y + t.y));
     Ok(Vec2::new(x / n, y / n))
-}
-
-// Low on health: step toward the nearest tile with zero expected damage (leaning toward our base),
-// and recall once on one, since damage interrupts a recall. Recalls anyway if no safe tile can be reached.
-pub fn retreat_and_recall() -> Result<()> {
-    let me = me()?;
-    let threats = Threats::scan()?;
-    let home = ally_spawn_centre()?;
-    let toward_home = |tile: Vec2| RETREAT_HOME_PULL * distance(tile, home) as f32;
-    if threats.damage_at(me.position()?) > 0.0
-        && move_towards_closest_with_pull(threats.safe_tiles()?, toward_home, true)?
-        && threats.damage_at(me.position()?) > 0.0 {
-        return Ok(()); // still in danger after this step; keep walking next turn
-    }
-    me.recall()
 }
 
 // Tribute at an altar in range, otherwise walk toward the nearest unlocked altar.
@@ -791,16 +1071,27 @@ pub fn bank_gems() -> Result<()> {
 pub const BANK_MIN_GEMS: u32 = 40;
 pub const BANK_NEAR_TILES: i32 = 6;
 
+// Once we decide to bank, keep at it until the bag is tributed (BANK_COMMIT). Without it, a walk to
+// an altar that first steps away from a nearby one (around a wall) left BANK_NEAR_TILES, so we went
+// back to farming, stepped back and banked again: back and forth for up to 99 turns.
+pub const BANK_COMMIT: bool = true;
+
+thread_local! {
+    static BANKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn should_bank() -> Result<bool> {
     let me = me()?;
     let gems = me.gem_count()?;
-    if gems == 0 { return Ok(false); }
-    if gems >= BANK_MIN_GEMS { return Ok(true); }
+    if gems == 0 { BANKING.with(|b| b.set(false)); return Ok(false); }
+    if BANK_COMMIT && BANKING.with(|b| b.get()) { return Ok(true); }
+    let mut bank = gems >= BANK_MIN_GEMS;
     let here = me.position()?;
     for altar in cambc::map::altars()?.positions()? {
-        if distance(here, altar) <= BANK_NEAR_TILES { return Ok(true); }
+        if distance(here, altar) <= BANK_NEAR_TILES { bank = true; }
     }
-    Ok(false)
+    BANKING.with(|b| b.set(bank));
+    Ok(bank)
 }
 
 // Whether we know of an altar without an enemy lock on it within `tiles` of us.
@@ -838,13 +1129,32 @@ pub fn base_willingness(shops_anywhere: bool, rounds_away: u32) -> Result<f32> {
 const TANK_FUNNEL: bool = true;
 pub const FUNNEL_HEALERS: bool = true;
 
-// Attack a camp already in range (camps never move, so their spawn tile is their position).
+// Attack the weakest camp already in range (camps never move, so their spawn tile is their
+// position), skipping groups we'd lose to (collect::CAMP_FIGHT): leave those instead.
 fn attack_camp_in_range() -> Result<bool> {
     let me = me()?;
     if !me.can_attack()? { return Ok(false); }
     let (position, range) = (me.position()?, me.attack_range()?);
-    for camp in cambc::vision::camps()? {
-        if distance(camp.spawn_position(), position) <= range && attack_if_in_range(&camp)? { return Ok(true); }
+    let sight = sight()?;
+    let mut best: Option<(f32, &Camp)> = None;
+    for camp in &sight.camps {
+        if distance(camp.spawn_position(), position) > range { continue; }
+        let Some(index) = group_at(camp.spawn_position())? else { continue };
+        if crate::collect::camp_fight_winnable(index)? == Some(false) { continue; }
+        let health = camp.health()?;
+        if best.is_none_or(|(h, _)| health < h) { best = Some((health, camp)); }
+    }
+    match best {
+        Some((_, camp)) => attack_if_in_range(camp),
+        None => Ok(false),
+    }
+}
+
+// Whether an ally (not us) stands on one of `group`'s camp tiles.
+fn ally_on_group(group: &CampGroup) -> Result<bool> {
+    for ally in &sight()?.allies {
+        let p = ally.position()?;
+        if group.camps().iter().any(|c| c.spawn_position() == p) { return Ok(true); }
     }
     Ok(false)
 }
@@ -852,7 +1162,7 @@ fn attack_camp_in_range() -> Result<bool> {
 // Whether an AD carry ally (not us) has any of `group`'s capture tiles within its attack range.
 fn carry_covers(group: &CampGroup) -> Result<bool> {
     let my_position = me()?.position()?;
-    for ally in cambc::vision::champions(Some(Team::Ally))? {
+    for ally in &sight()?.allies {
         let position = ally.position()?;
         if position == my_position || !crate::constants::class_of(ally.champion_name()?).is_ad_carry() { continue; }
         let range = ally.attack_range()?;
@@ -871,9 +1181,12 @@ thread_local! {
 // Phase filter on top of nearest-camp farming: before FARM_GEM_PHASE_ROUND we skip gem clusters
 // and monoliths (gems early don't help; gold buys items), after it we skip gold clusters (35 gold,
 // no gems). If no camp of the preferred kinds is available we fall back to all camps. Scoring
-// camps by value per turn instead tested worse (writeup entry 20).
+// camps by value per turn instead tested worse (writeup entry 20). The filter applies to whole
+// groups: skipping single camps abandoned a group whose elk was dead but whose gold cluster wasn't,
+// so it could never be captured (and the champion stepped back and forth at its edge of vision).
 pub const FARM_PHASE_FILTER: bool = true;
 pub const FARM_GEM_PHASE_ROUND: u32 = 150;
+pub const FARM_PHASE_BY_GROUP: bool = true; // false: the old per-camp filter
 
 fn preferred_in_phase(kind: cambc::CampType, round: u32) -> bool {
     use cambc::CampType as C;
@@ -885,7 +1198,7 @@ fn preferred_in_phase(kind: cambc::CampType, round: u32) -> bool {
 fn hotspot_group(available: &[bool], round: u32) -> Option<usize> {
     use crate::hotspots::{HOTSPOTS, HOTSPOT_MAX_DETOUR, HOTSPOT_START_ROUND, HOTSPOT_TOP_K};
     if !HOTSPOTS || round < HOTSPOT_START_ROUND { return None; }
-    if crate::hotspots::HOTSPOT_AVOID_ENEMIES && !cambc::vision::champions(Some(Team::Enemy)).ok()?.is_empty() { return None; }
+    if crate::hotspots::HOTSPOT_AVOID_ENEMIES && !sight().ok()?.enemies.is_empty() { return None; }
     let (gold, gems) = crate::hotspots::my_spots()?;
     let spots = if round < FARM_GEM_PHASE_ROUND { gold } else { gems };
     let groups = camp_groups().ok()?;
@@ -899,66 +1212,225 @@ fn hotspot_group(available: &[bool], round: u32) -> Option<usize> {
     })
 }
 
-// Farm the nearest camps that aren't respawning (including ones we saw respawning earlier). Tanks and healers still fight camps but leave the capture
-// of a cleared group to a covering AD carry (see TANK_FUNNEL).
-pub fn farm_camps() -> Result<()> {
-    let attacked = attack_camp_in_range()?;
-    if attacked { 
-        cast_abilities_on_camps(false)?;
-        return Ok(()); 
-    }
+// Don't farm next to enemies we aren't fighting: skip groups a visible enemy could reach within
+// FARM_ENEMY_TURNS turns (its attack range plus that much walking).
+pub const FARM_AVOID_ENEMIES: bool = true;
+const FARM_ENEMY_TURNS: i32 = 2;
 
+// Where farming heads this turn, shared by the fight decision (collect::GREEDY) and farm_camps.
+pub struct FarmPlan {
+    pub goals: Bitboard,
+    pub greedy: bool, // the goals are safe groups or uncaptured rewards within collect::GREEDY_RADIUS
+}
+
+thread_local! {
+    static FARM_PLAN: std::cell::RefCell<Option<(u32, Vec2, std::rc::Rc<FarmPlan>)>> = const { std::cell::RefCell::new(None) };
+}
+
+// What farm_plan needs about each group that never changes, computed once. Pure Rust work is
+// metered too (looping over every camp of every group several times a turn cost ~30k fuel), so a
+// turn only looks at the camps of groups close enough to be in sight.
+struct GroupInfo {
+    centre: Vec2,
+    radius: i32,             // furthest camp from the centre
+    preferred: [bool; 2],    // has a camp preferred before / from FARM_GEM_PHASE_ROUND
+}
+
+struct FarmStatics {
+    groups: Vec<GroupInfo>,
+    all: Bitboard,          // every camp's tile
+    preferred: [Bitboard; 2], // camps of preferred groups, per phase
+}
+
+fn farm_statics() -> Result<&'static FarmStatics> {
+    thread_local! {
+        static STATICS: OnceCell<&'static FarmStatics> = const { OnceCell::new() };
+    }
+    if let Some(statics) = STATICS.with(|c| c.get().copied()) { return Ok(statics); }
+    let mut statics = FarmStatics { groups: Vec::new(), all: Bitboard::new()?, preferred: [Bitboard::new()?, Bitboard::new()?] };
+    for group in camp_groups()? {
+        let n = group.camps().len().max(1) as i32;
+        let (x, y) = group.camps().iter().fold((0, 0), |(x, y), c| (x + c.spawn_position().x, y + c.spawn_position().y));
+        let centre = Vec2::new(x / n, y / n);
+        let radius = group.camps().iter().map(|c| distance(c.spawn_position(), centre)).max().unwrap_or(0);
+        let mut preferred = [false; 2];
+        for (phase, round) in [0, FARM_GEM_PHASE_ROUND].into_iter().enumerate() {
+            preferred[phase] = group.camps().iter().any(|c| preferred_in_phase(c.kind(), round));
+        }
+        for camp in group.camps() {
+            statics.all.set(camp.spawn_position(), true)?;
+            for (phase, round) in [0, FARM_GEM_PHASE_ROUND].into_iter().enumerate() {
+                let keep = if FARM_PHASE_BY_GROUP { preferred[phase] } else { preferred_in_phase(camp.kind(), round) };
+                if keep { statics.preferred[phase].set(camp.spawn_position(), true)?; }
+            }
+        }
+        statics.groups.push(GroupInfo { centre, radius, preferred });
+    }
+    let statics: &'static FarmStatics = Box::leak(Box::new(statics));
+    STATICS.with(|c| { let _ = c.set(statics); });
+    Ok(statics)
+}
+
+// Plan farming: the nearest camps that aren't respawning (including ones we saw respawning
+// earlier), skipping groups we'd lose to (collect::CAMP_FIGHT) or that enemies are next to. Safe
+// groups nearby come first (collect::GREEDY), and a capture we're standing on is held. Tanks and
+// healers still fight camps but leave the capture of a cleared group to a covering AD carry (see
+// TANK_FUNNEL). Cached per round and position.
+pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
+    let here = me()?.position()?;
+    let round = cambc::round_number()?;
+    if let Some(plan) = FARM_PLAN.with(|c| c.borrow().as_ref().filter(|(r, p, _)| (*r, *p) == (round, here)).map(|(_, _, p)| p.clone())) {
+        return Ok(plan);
+    }
+    let statics = farm_statics()?;
     let class = crate::constants::class_of(me()?.champion_name()?);
     let is_tank = TANK_FUNNEL && (class == crate::constants::ClassKind::Tank
         || (FUNNEL_HEALERS && class == crate::constants::ClassKind::Healer));
-    // Set goal bits directly: each new Bitboard costs ~2k fuel in the Rust SDK.
-    let mut goals = Bitboard::new()?;
-    let visible = cambc::vision::visible_tiles()?;
-    let live_camps = cambc::vision::camp_tiles()?;
-    let round = cambc::round_number()?;
+    let sight = sight()?;
+    // Enemy reach: (position, attack range + FARM_ENEMY_TURNS turns of walking).
+    let mut enemy_reach = Vec::new();
+    if FARM_AVOID_ENEMIES {
+        for enemy in &sight.enemies {
+            enemy_reach.push((enemy.position()?, enemy.attack_range()? + enemy.base_stats()?.base_move_speed as i32 * FARM_ENEMY_TURNS));
+        }
+    }
+    let max_reach = enemy_reach.iter().map(|&(_, r)| r).max().unwrap_or(0);
+    let vision = me()?.base_stats()?.vision_radius as i32;
+    let phase = usize::from(round >= FARM_GEM_PHASE_ROUND);
     let groups = camp_groups()?;
     let mut ready = RESPAWN_READY.with(|cell| cell.take());
     ready.resize(groups.len(), 0);
-    let mut preferred = Bitboard::new()?;
     let mut available = vec![false; groups.len()];
+    let mut dropped = Vec::new();  // groups that aren't goals this turn
+    let mut not_goals = Vec::new(); // dead camps of a group that's still partly alive
+    let mut greedy = Vec::new();
+    let mut preferred_left = 0;
+    let mut holding = false;
     for (index, group) in groups.iter().enumerate() {
+        let info = &statics.groups[index];
+        // Nearest any of its camps can be.
+        let gap = distance(info.centre, here) - info.radius;
         let mut seen = false;
         let mut any_live = false;
-        for camp in group.camps() {
-            let spawn = camp.spawn_position();
-            if !visible.is_set(spawn)? { continue; }
-            seen = true;
-            if live_camps.is_set(spawn)? { any_live = true; break; }
-        }
-        if any_live { ready[index] = 0; }
-        if round < ready[index] { continue; } // seen respawning earlier, not back yet
-        // Only a seen group with no live camps can be respawning or waiting for capture.
-        if seen && !any_live {
-            match group.state()? {
-                cambc::CampGroupState::Respawning(timer) => { ready[index] = round + timer.max(0) as u32; continue }
-                cambc::CampGroupState::RewardAvailable if is_tank && carry_covers(group)? => continue,
-                _ => {}
+        let mut seen_dead = Vec::new(); // camps we can see are gone
+        if gap <= vision {
+            for camp in group.camps() {
+                let spawn = camp.spawn_position();
+                if !sight.visible.is_set(spawn)? { continue; }
+                seen = true;
+                if sight.camps.iter().any(|c| c.spawn_position() == spawn) { any_live = true; } else { seen_dead.push(spawn); }
             }
         }
+        if any_live { ready[index] = 0; }
+        if round < ready[index] { dropped.push(index); continue; } // seen respawning earlier, not back yet
+        // Only a seen group with no live camps can be respawning or waiting for capture.
+        let mut reward = false;
+        if seen && !any_live {
+            match group.state()? {
+                cambc::CampGroupState::Respawning(timer) => { ready[index] = round + timer.max(0) as u32; dropped.push(index); continue }
+                cambc::CampGroupState::RewardAvailable if is_tank && carry_covers(group)? => { dropped.push(index); continue }
+                // An ally already capturing it would only split the reward with us.
+                cambc::CampGroupState::RewardAvailable => reward = !ally_on_group(group)?,
+                _ => {}
+            }
+        } else if if any_live { crate::collect::camp_fight_winnable(index)? == Some(false) } else { crate::collect::recently_lost(index, round) } {
+            dropped.push(index); // we'd lose this fight (or did recently, if it's out of sight)
+            continue;
+        }
+        // While part of the group is alive, only its live (or unseen) camps are goals. A dead camp's
+        // tile only becomes a goal once the whole group is cleared (standing there captures it):
+        // otherwise a melee champion standing on one counts as having arrived and never walks over
+        // to the live camp out of reach (seen stuck for 65 turns).
+        let is_goal = |c: &Camp| !(any_live && seen_dead.contains(&c.spawn_position()));
+        if gap <= max_reach + vision && !enemy_reach.is_empty() && group.camps().iter().filter(|c| is_goal(c))
+            .any(|c| enemy_reach.iter().any(|&(p, r)| distance(p, c.spawn_position()) <= r)) { dropped.push(index); continue; }
+        if reward && group.camps().iter().any(|c| c.spawn_position() == here) { holding = crate::collect::CAPTURE_HOLD; }
+        if any_live { not_goals.extend(seen_dead.iter().copied()); }
         available[index] = true;
-        for camp in group.camps() {
-            goals.set(camp.spawn_position(), true)?;
-            if preferred_in_phase(camp.kind(), round) { preferred.set(camp.spawn_position(), true)?; }
+        if info.preferred[phase] { preferred_left += 1; }
+        if crate::collect::GREEDY && gap <= crate::collect::GREEDY_RADIUS && (reward || crate::collect::safe_group(index)?) {
+            for camp in group.camps().iter().filter(|c| is_goal(c)) {
+                if distance(camp.spawn_position(), here) <= crate::collect::GREEDY_RADIUS { greedy.push(camp.spawn_position()); }
+            }
         }
     }
     RESPAWN_READY.with(|cell| cell.replace(ready));
 
-    if FARM_PHASE_FILTER && !preferred.is_empty()? { goals = preferred; }
-    // Past the early game, head for our highest-ranked available hot spot (see hotspots.rs).
-    if let Some(index) = hotspot_group(&available, round) {
-        goals.clear();
+    let mut is_greedy = false;
+    let mut goals;
+    if holding {
+        goals = Bitboard::new()?;
+        goals.set(here, true)?;
+    } else if !greedy.is_empty() {
+        is_greedy = true;
+        goals = Bitboard::new()?;
+        for tile in greedy { goals.set(tile, true)?; }
+    } else if let Some(index) = hotspot_group(&available, round) {
+        // Past the early game, head for our highest-ranked available hot spot (see hotspots.rs).
+        goals = Bitboard::new()?;
         for camp in groups[index].camps() { goals.set(camp.spawn_position(), true)?; }
+    } else {
+        // Every camp (of the phase's preferred groups, if any is available), minus what's dropped.
+        goals = if FARM_PHASE_FILTER && preferred_left > 0 { statics.preferred[phase].clone() } else { statics.all.clone() };
+        for index in dropped {
+            for camp in groups[index].camps() { goals.set(camp.spawn_position(), false)?; }
+        }
+        for tile in not_goals { goals.set(tile, false)?; }
     }
+    let plan = std::rc::Rc::new(FarmPlan { goals, greedy: is_greedy });
+    FARM_PLAN.with(|c| *c.borrow_mut() = Some((round, here, plan.clone())));
+    Ok(plan)
+}
 
-    if move_towards_closest(goals)? { 
+// Clear camps and capture their rewards, following farm_plan.
+pub fn farm_camps() -> Result<()> {
+    let attacked = attack_camp_in_range()?;
+    if attacked {
+        trace("farm-hit");
+        cast_abilities_on_camps(false)?;
+        return Ok(());
+    }
+    let plan = farm_plan()?;
+    if plan.greedy { trace("collect"); }
+    let moved = move_towards_closest(plan.goals.clone())?;
+    trace(if moved { "farm-move" } else { "farm-idle" });
+    if moved {
         if attack_camp_in_range()? {
             cast_abilities_on_camps(true)?;
         }
+    }
+    Ok(())
+}
+
+// Ward a hidden tile next to us (a bush, or behind a wall) so we see into it: bushes first, then
+// the furthest from us (the ward sees 6 tiles round it). Wards are free and recharge after a
+// round; we keep our current one while it's within WARD_KEEP_TILES of us.
+pub const WARD_HIDDEN: bool = true;
+const WARD_KEEP_TILES: i32 = 3;
+
+pub fn ward_hidden_spots() -> Result<()> {
+    let me = me()?;
+    if !WARD_HIDDEN || me.ward_cooldown()? > 0 { return Ok(()); }
+    let here = me.position()?;
+    if me.ward_positions()?.iter().any(|&w| distance(w, here) <= WARD_KEEP_TILES) { return Ok(()); }
+    let radius = cambc::constants().ward_placement_radius as i32;
+    let sight = sight()?;
+    let visible = &sight.visible;
+    let (bushes, walls, holes) = (cambc::map::bushes()?, cambc::map::walls()?, cambc::map::holes()?);
+    let mut best: Option<(Vec2, (bool, i32))> = None;
+    for dx in -radius..=radius {
+        for dy in -radius..=radius {
+            let tile = Vec2::new(here.x + dx, here.y + dy);
+            if !cambc::map::is_in_bounds(tile)? || visible.is_set(tile)? || walls.is_set(tile)? || holes.is_set(tile)? { continue; }
+            let rank = (bushes.is_set(tile)?, distance(tile, here));
+            if best.is_none_or(|(_, r)| rank > r) { best = Some((tile, rank)); }
+        }
+    }
+    // An unseen unit on the tile makes placement fail or error; either way we just carry on. The
+    // new ward replaces the old one, so what we see changes.
+    if let Some((tile, _)) = best {
+        if me.place_ward(tile).unwrap_or(false) { trace("ward"); }
+        forget_sight();
     }
     Ok(())
 }

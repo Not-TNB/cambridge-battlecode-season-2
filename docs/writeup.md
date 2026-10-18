@@ -9,11 +9,13 @@ A running log of every feature and change to `bots/my-bot`, written as we go so 
 | `src/main.rs` | Entry point: draft vs play dispatch, `random_number` / `random_seed` (with the per-build `SEED`) |
 | `src/draft.rs`, `src/constants.rs` | Draft logic and the champion class table |
 | `src/bot.rs` | The turn skeleton shared by every champion: stat choice, recall, shopping, then the champion's hooks |
-| `src/common.rs` | Shared helpers: pathing, blocked tiles, attacks, ability casting, fighting, banking gems, farming |
+| `src/common.rs` | Shared helpers: per-turn caches (`sight`, `blocked_tiles`), pathing, attacks, ability casting, fighting, banking gems, farming (`farm_plan`), wards, the `TRACE` debug log |
+| `src/safety.rs` | Enemy sightings memory, recalls that wait for a safe channel, retreating from losing fights |
+| `src/collect.rs` | Capture holding, escorting (tanks and Willow), and the camp-fight and greedy experiments (off) |
 | `src/champions/mod.rs` | The `ChampionAi` trait (decision hooks with shared defaults) and `for_champion` dispatch |
 | `src/champions/<name>.rs` | One file per champion (12, with Cassi and Issac separate) with its kit summary and any overrides |
 
-Each turn, `bot.rs` runs, in order: skip if unable to act, then shop (`shops_anywhere`), then recall when below 35% health, then `fight()`, then `bank_gems()` when carrying gems, otherwise `farm()`. To give a champion its own behaviour, override the hook in its file and leave the rest to `common.rs`.
+Each turn, `bot.rs` runs, in order: skip if unable to act, then shop (`shops_anywhere`), then `support()`, then recall when below 35% health, then `fight()`, then the go-home recall, then `bank_gems()` when `should_bank()`, otherwise `farm()`; with fuel to spare it then records enemy sightings and places a ward. To give a champion its own behaviour, override the hook in its file and leave the rest to `common.rs`.
 
 ---
 
@@ -487,7 +489,11 @@ Every champion is tagged with a class in `constants.rs`:
   - **Turn-by-turn fight:** the duel is simulated a turn at a time, for at most 40 turns, instead of with fixed damage rates. We hit first each turn.
   - **Enemies join** (`DUEL_ENEMIES_JOIN`): each visible enemy champion counts once it could have walked into range of our duel tile, i.e. its distance minus its speed × turns elapsed ≤ its range. Walls are ignored, which errs towards danger. The walk to the duel tile uses the same time-aware damage. Camps don't move.
   - **Allies join** (`DUEL_ALLIES_JOIN`): visible allies add their basic attack on the target once they could reach it.
-  - **Back off** (`FLEE_LOSING_FIGHTS`): when the damage expected on our tile over the next 3 turns, enemies closing in included, would kill us and no visible enemy is winnable, walk towards safe tiles (leaning towards base) instead of trading or farming nearby.
+  - **Back off** (`FLEE_LOSING_FIGHTS`): when the damage expected on our tile over the next 3 turns, enemies closing in included, would kill us and no visible enemy is winnable, keep our distance (`keep_distance`) instead of trading or farming nearby.
+    - **What "keep our distance" means:** stay just outside every visible enemy's reach (attack range + one turn of walking). Already outside: hold, still shooting anything in our own range (ranged champions can poke melee enemies from there). Inside: step to the tile that gets outside while staying as close as possible, without dashing.
+    - **Replaced:** at first (the results below) it walked to the nearest tile no threat reached, leaning towards base and dashing. Per Tristan, it now holds the line rather than running.
+    - **Results** vs the run-to-safety version, 20 games: 9/20 wins, kills/deaths 181/205 vs 184/205, chases followed by death 8% vs 8%, i.e. neutral.
+    - **Behaviour check** (4 maps): 39% of these turns end out of reach, all 1–2 tiles outside it, against 21% for the old version. Median distance to the nearest enemy is 4 in both.
   - **Engage rule:** close enemies (`ENGAGE_RADIUS`, entry 15) are only fought despite a losing simulation if we'd survive at least `ENGAGE_MIN_SURVIVE_TURNS` = 4 turns.
   - With joining and back-off off, the model matches the old 1v1 one (apart from the 40-turn cap).
 - **Testing:** 20 games per variant (10 maps × both sides) vs the same bot with all of it off. Chase episodes are runs of chase turns; we count those followed by our death within 10 rounds.
@@ -506,6 +512,132 @@ Every champion is tagged with a class in `constants.rs`:
 - **Follow-ups:**
   - Enemies out of sight (fog, bushes) still can't be counted. Remembering recently seen enemy positions, like the chase memory in entry 16, would help.
   - Allies count basic attacks only.
+
+## 23. Getting out of losing fights: stuns, spawn, cornered, sightings (experiment, reverted)
+**Never committed; code removed.** Requested by Tristan (ideas 2, 4, 6, 7 from a list of escape options). Reverted to the entry 22 behaviour because the kept set was neutral; kept here as a record.
+
+- **What changed** (`escape`, called by `fight_enemies` when `losing_fight`; each part has its own switch):
+  1. **Stun to escape** (`STUN_TO_ESCAPE`): cast a ready stun on the enemy closest to hitting us (smallest gap to its attack range + one step). Cassi's stun still allows walking that turn. The others (Prism, Ren, Ryth) end our movement, but the stunned enemy loses its turn too.
+  2. **Go home** (`SPAWN_ESCAPE`): if our spawn is at most 10 steps away and the walk, at the damage we're taking now, costs under 90% of our health, head there (dashes allowed). On our spawn we heal to full each turn and enemies can't enter, so `losing_fight` there only fears a one-turn burst; otherwise we stand and fight. The spawn distance map is built once per champion, on a turn with fuel to spare (up to ~40k on big maps).
+  3. **Fight when cornered** (`FIGHT_WHEN_CORNERED`): if no reachable tile gets outside every enemy's reach, stop stepping back. If we carry gems, an altar is in range and we expect to live until the tribute completes (damage doesn't interrupt it), start a tribute. Otherwise strike the weakest enemy in reach with what's ready.
+  4. **Sightings** (`SIGHTING_THREAT_ROUNDS` = 5): each champion remembers where each enemy was last seen. For 5 rounds after an enemy goes out of sight it still counts as a threat at its last tile, with reach widened by how far it could have walked since. This feeds `losing_fight` and the duel model (entry 22).
+  - Otherwise we keep our distance as before (entry 22).
+- **Testing:** 20 games per variant (10 maps × both sides) vs the same bot with all of entry 23 off.
+
+  | Variant | Wins | Kills/deaths (variant / base) | Triggers |
+  |---|---|---|---|
+  | All, incl. farm avoidance | 11/20 | 186/189 / 166/209 | cornered 127, stun 9, home 2 |
+  | Cornered only | 11/20 | 158/161 / 143/175 | cornered 117 |
+  | Sightings (threat + farm avoidance) | 7/20 | 138/194 / 173/158 | |
+  | Sighting threat only | 11/20 | 199/194 / 175/227 | |
+  | Farm avoidance only | 6/20 | 160/223 / 200/182 | |
+  | **Kept** (no farm avoidance), seed 1 | 10/20 | 172/225 / 196/194 | cornered 220, stun 19, home 5 |
+  | **Kept**, seed 2 | 9/20 | 180/197 / 172/211 | cornered 115, stun 16, home 4 |
+
+  - **Farm avoidance** (skip camps within 6 tiles of an enemy seen in the last 15 rounds) was the only clearly bad part: 6/20 and 7/20, losing the kill trade both times. It's off (`FARM_AVOID_SIGHTINGS`). Staying away from places enemies were costs farming and concedes contested camps.
+  - **The kept set** is neutral at 40 games: 19/40, kills/deaths 352/422 vs 368/405. Chases followed by our death are 8% vs 10%.
+  - **The cornered fallback** fires most (115–220 times per 20 games). Stuns and going home are rare (5–19), because few losing fights happen with a stun ready or near spawn.
+- **Not implemented, ideas for later:**
+  - **A confidence heatmap** around last-seen enemy positions, which could double as a danger map. A grid isn't needed: the sightings list already holds the data, and "heat" at a tile can be computed when asked as Σ confidence(age) × spread(distance), with the spread radius growing by speed × age. That's cheap per query and needs no per-turn grid update.
+  - **Caution:** the farm-avoidance result suggests that being wary of whole areas costs more than it saves. A heatmap would be better used to judge fights than to steer farming.
+
+## 24. Play-test fixes: standing still, back and forth, recalls, wards, collecting, escorts
+**Uncommitted.** Requested by Tristan after games against another team's bot (not in the repo, so not reproducible here).
+
+- **Testing change:** all 21 maps (old, new and custom) × both sides × 6 seeds = 252 games, vs the working tree at the start of this entry (entries 15–22, called "baseline" below). One run's standard error is about ±7 wins. Single features were first screened on 2 seeds (84 games, ±4.6). Matches take 1–2 s each, so a 252-game run takes about 5 minutes.
+- **Debug trace (`TRACE` in `common.rs`):** when on, every turn prints one line with our tile, health, fuel and the branches taken (`trace("tag")`), and `checkpoint("tag")` records fuel at a point for profiling. A script then finds runs of 8+ turns on one tile ("standing still", not counting camp fights) and 6+ turns alternating between two tiles ("back and forth"). Caveats found the hard way:
+  - Formatting a float (`{:.0}`) costs ~9k fuel in wasm, so the trace line prints integers.
+  - A trace line that runs out of fuel suspends the champion into its next turn, so traced runs are for diagnosis only, never for win rates.
+
+### What the trace showed (baseline mirror, 42 games)
+
+| Problem | Cause | Example |
+|---|---|---|
+| Standing still | Fight logic used 60–80k of the 100k fuel when enemies were in sight but not chased; `bot.rs` then skipped farming (40k guard). 4.8% of all turns. | Orchard: 3 champions still for ~175 turns from round 71 |
+| Standing still | Spawns touch on spine: both teams strike across the border all game, healing on spawn | 5 champions still for 1,950–1,997 turns |
+| Back and forth | The phase filter (entry 20) dropped single camps: an elk-and-gold-cluster group whose elk was dead lost its last goal after round 150, so it could never be captured; from one tile the cluster was out of sight and the dead elk made the group a goal again | Elkring: 3 champions, 58–77 turns between two spawn tiles |
+| Back and forth | `should_bank` checks altars within 6 tiles in a straight line, but the walk to the altar first stepped away, so banking turned off, farming stepped back | Interlock: up to 99 turns |
+
+### Fuel
+
+Measured with checkpoints; an SDK call costs about 50–100 fuel, a new `Bitboard` ~2k, listing visible champions ~4k (each `Champion` built reads its ability slots), and plain Rust is metered too (1,000 `Vec` pushes ≈ 35k).
+
+- **Per-turn caches,** keyed by round and our tile and dropped after any attack, cast, dash or ward (any of which can change what we see): `sight()` (visible enemies, allies, camps and the visible board), `blocked_tiles()` (terrain combined once at startup), each enemy's threats (`enemy_threats_by_name`, shared by the threat scan and the sightings memory), and `farm_plan()`.
+- **Cheaper loops:** camp threats start from the visible camps; `farm_plan` only looks at the camps of groups within vision range and builds the goal board from a precomputed one; the duel simulation adds threats as they arrive instead of re-summing all of them each turn; the chase walking grid is capped at 12 steps (was 16).
+- **Standoff memo:** if last turn's fight decided not to act and nothing has changed (our tile and health, each enemy's tile and health, none within 4 tiles), skip re-deciding and go farm. This fixed the orchard case.
+- **Extras last:** recording sightings and placing wards run after the turn's decisions, only with 30k+ fuel left.
+- **Result:** turns skipped for fuel went from 4.8% to 3.1%.
+- **Surprise:** the first version of the fuel fix alone *lost*, 76/168 with kills/deaths 1,212/1,572. With fuel to spare, champions that saw enemies they wouldn't chase walked on to camps next to them instead of freezing. Making them hold whenever an enemy was in sight recovered it (44/84), so the old standing still had been an accidental "don't farm near enemies". `FARM_AVOID_ENEMIES` (below) does that on purpose.
+
+### Errors
+
+- Some enemies on the occupancy board fail unit queries (health, name) with "Unit is not in vision", even mid-turn after passing them. Each such error ended the turn. `sight()` now drops enemies it can't query, and an error inside `fight()` is logged (`bot error (fight)`) and the turn carries on to banking and farming instead.
+- Placing a ward replaces the old one, so units seen through it disappear mid-turn: the caches are dropped after placing one.
+
+### Features (each has a switch)
+
+Screening, 84 games each vs baseline. "Alone" means every other new feature off; "on top" means added to the five kept in the first block.
+
+| Switch | What it does | Alone | On top |
+|---|---|---|---|
+| `WARD_HIDDEN` | When the ward is ready and ours is more than 3 tiles away, ward a hidden tile within 2: bushes first, then behind walls, furthest first | **54** | |
+| `RECALL_SAFE_TURNS` = 5 | Recall only where no known threat can reach us during the 5-turn channel; otherwise walk (dashing, leaning home) towards such a tile and recall on arrival | **53** | |
+| `SIGHTING_ROUNDS` = 5 | An enemy that left vision still counts as a threat for 5 rounds, from where it was seen, its reach growing a step per round. Used by recalls and retreats only | 53 with the above | |
+| `CAPTURE_HOLD` | Standing on a cleared group's capture tile: don't chase, bank or go home until it pays out | 49 | |
+| `BANK_COMMIT` | Once banking, keep at it until the bag is tributed | 45 | |
+| *(those five together)* | | | **58** |
+| `IGNORE_ENEMIES_ON_SPAWN` | Enemies on their own spawn are threats but not targets | 40 | 63 |
+| `FARM_AVOID_ENEMIES` | Skip camp groups a visible enemy could reach within 2 turns | 41 | 64 |
+| `ESCORT` + `ESCORT_CHASE` | Tanks and Willow only chase an enemy a damage dealer is near | 42 | 66 |
+| `RETREAT_FROM_LOSING` | From a fight we'd lose, walk to tiles nothing reaches within 2 turns (dashing, leaning home) instead of holding just outside reach (`keep_distance`, now the fallback) | 38 | 58 |
+| `ESCORT_FOLLOW` | Tanks and Willow walk back to the nearest damage dealer when more than 4 away | 34 | |
+| `ESCORT_RECALL` | Tanks and Willow recall when every damage dealer in sight is recalling | 35 | |
+| `CAMP_FIGHT` | Simulate fighting a camp group from here (us and allies within 4 vs every live camp); skip groups we'd not clear with 35% health left | 25 | 49 |
+| `GREEDY` | With no enemy within 2 turns, safe groups (clusters, winnable camps, uncaptured rewards) within 8 tiles come first, before chasing and whatever the phase | 23 | |
+| `GO_HOME_NEEDS_ENEMY` | The literal reading of "don't recall when no enemy is in vision": skip the go-home recall with no enemy in sight | (171/252 on the final set, deaths 1,608 vs 1,226) | |
+
+Also, unswitched: **lowest health first.** Camps in range, camps for spells and chase targets are picked weakest first (chase ties go to the quicker kill).
+
+- **Variants tried** for the losers (84 games each):
+  - `CAMP_FIGHT`: skip only if we'd die, 37; camp damage shared with allies in range, 34; both, 40.
+  - `GREEDY`: only clusters and rewards, 25; within 4 tiles, 29; steering farming without blocking chases, 28 and 36.
+  - `ESCORT_FOLLOW`: not abandoning a camp in range, 39.
+  - `FARM_PHASE_BY_GROUP` (the elkring fix) is neutral on wins (42 either way) but removes that back and forth. Kept.
+- **Why the losers lose, as far as we can tell:**
+  - **Greedy** sends champions past nearer wolves to 35-gold clusters, and to rewards an ally is already capturing, which only splits them. Rewards with an ally on them are now excluded, but it still loses.
+  - **The camp-fight model** has to assume every camp hits us, because which champion a camp attacks isn't documented. That makes elk groups look unwinnable, so champions walk further alone.
+  - **Escort following and recalling** cost farming time.
+- **Confirmation over 252 games** (seeds 1–6):
+
+  | Version | Wins | Kills/deaths |
+  |---|---|---|
+  | Five kept features | 180 | 2,472/1,331 |
+  | + spawn / + avoid / + escort chase / + retreat (each alone) | 178 / 181 / 179 / 177 | |
+  | **Default: all nine** | **173–174** | **2,370–2,403 / 1,226–1,370** |
+
+  - The four extras are neutral, each and together (all within one standard error). They're on because they were asked for or fix an observed problem (spine), and they give the fewest deaths.
+
+### Results (defaults)
+
+- **vs baseline:** **173/252 (69%)**, kills/deaths 2,370/1,370.
+  - Weakest maps: rows 4/12 (also 4/12 with only the five kept features, so not caused by this entry) and spine 4/12 (between 4 and 9/12 across variants at 12 games).
+- **vs `old-bot`:** 84/84 (baseline: 82/84), with 129 deaths (baseline: 255).
+- **Behaviour** (traced mirror, 42 games):
+
+  | | Baseline | Now |
+  |---|---|---|
+  | Standing still, not counting camp fights | 15,148 turns | 1,495 |
+  | Longest standing-still run | 1,997 turns (spine) | 36 |
+  | Back and forth | 100 runs, 1,295 turns | 40 runs, 345 turns |
+  | Longest back-and-forth run | 99 turns | 42 |
+  | Turns skipped for fuel | 4.8% | 3.1% |
+
+- **Errors:** about 1.2 per game (baseline about 0.6). Most are the logged, now non-fatal fight errors.
+- **Follow-ups:**
+  - Which champion a camp attacks is worth measuring: with that, `CAMP_FIGHT` could be calibrated instead of assuming the worst.
+  - Allies can't see each other's sightings or wards: shared memory could carry enemy positions.
+  - `GREEDY` might work as a narrow tie-breaker (a cluster no further than the nearest camp) rather than an override.
+  - Rows loses from both sides in every version; worth a look on its own.
 
 ---
 
