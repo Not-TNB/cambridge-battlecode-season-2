@@ -10,6 +10,12 @@ pub struct Cassi;
 impl ChampionAi for Cassi {
     // Build: AP max -> some hp; Treasure / Power -> Power spam.
     fn build(&self) -> &'static [I] {
-        &[I::TreasureShardOfFocus, I::PowerShardOfFocus, I::PowerShardOfFocus, I::PowerShardOfHealth, I::PowerShardOfFocus]
+        &[
+            I::TreasureShardOfFocus,
+            I::PowerShardOfFocus,
+            I::PowerShardOfFocus,
+            I::PowerShardOfHealth,
+            I::PowerShardOfFocus,
+        ]
     }
 }

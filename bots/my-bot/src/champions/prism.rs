@@ -10,6 +10,11 @@ pub struct Prism;
 impl ChampionAi for Prism {
     // Build: AP -> hp; Monster -> Power / Bruiser.
     fn build(&self) -> &'static [I] {
-        &[I::MonsterShardOfFocus, I::PowerShardOfFocus, I::BruiserShardOfHealth, I::PowerShardOfFocus]
+        &[
+            I::MonsterShardOfFocus,
+            I::PowerShardOfFocus,
+            I::BruiserShardOfHealth,
+            I::PowerShardOfFocus,
+        ]
     }
 }

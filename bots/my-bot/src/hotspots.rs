@@ -7,7 +7,7 @@
 //   draft pick (u8), role (0 carry, 1 follower), gold count, gold spots (x, y as u8),
 //   gem count, gem spots (x, y as u8).
 // A spot is the spawn tile of a group's first camp.
-use crate::constants::{ClassKind, draft_class, draft_of};
+use crate::constants::{draft_class, draft_of, ClassKind};
 use cambc::{Bitboard, ChampionDraft, ChampionType, DistanceField, Result, Team, Vec2};
 use std::cell::OnceCell;
 
@@ -66,15 +66,21 @@ const PLAN_MIN_FUEL: u64 = 20_000;
 // Draft: submit the plan for our picks so far (rewritten before each of our picks). Only the first
 // draft turn has ample fuel (~1M; later turns get ~100k), so the ranking is computed then and kept.
 pub fn submit_plan(picks: &[ChampionDraft]) -> Result<()> {
-    if !HOTSPOTS { return Ok(()); }
+    if !HOTSPOTS {
+        return Ok(());
+    }
     thread_local! {
         static RANKED: OnceCell<(Vec<Vec2>, Vec<Vec2>)> = const { OnceCell::new() };
     }
     if RANKED.with(|cell| cell.get().is_none()) {
         let ranked = rank_spots()?;
-        RANKED.with(|cell| { let _ = cell.set(ranked); });
+        RANKED.with(|cell| {
+            let _ = cell.set(ranked);
+        });
     }
-    if cambc::fuel_remaining()? < PLAN_MIN_FUEL { return Ok(()); }
+    if cambc::fuel_remaining()? < PLAN_MIN_FUEL {
+        return Ok(());
+    }
     let bytes = RANKED.with(|cell| encode_plan(picks, cell.get().expect("set above")));
     cambc::draft_memory().submit(&bytes)
 }
@@ -83,17 +89,35 @@ pub fn submit_plan(picks: &[ChampionDraft]) -> Result<()> {
 fn rank_spots() -> Result<(Vec<Vec2>, Vec<Vec2>)> {
     // Walking distance from our spawn over the static map (camps are not obstacles yet).
     let mut walls = cambc::map::walls()?.clone();
-    for mask in [cambc::map::holes()?, cambc::map::altars()?, cambc::map::spawn_region(Team::Enemy)?] {
+    for mask in [
+        cambc::map::holes()?,
+        cambc::map::altars()?,
+        cambc::map::spawn_region(Team::Enemy)?,
+    ] {
         walls.union_assign(mask)?;
     }
     let mut field = DistanceField::new()?;
-    field.compute(&walls, cambc::map::spawn_region(Team::Ally)?, &mut Bitboard::new()?, 1000)?;
+    field.compute(
+        &walls,
+        cambc::map::spawn_region(Team::Ally)?,
+        &mut Bitboard::new()?,
+        1000,
+    )?;
     let mut enemy_walls = cambc::map::walls()?.clone();
-    for mask in [cambc::map::holes()?, cambc::map::altars()?, cambc::map::spawn_region(Team::Ally)?] {
+    for mask in [
+        cambc::map::holes()?,
+        cambc::map::altars()?,
+        cambc::map::spawn_region(Team::Ally)?,
+    ] {
         enemy_walls.union_assign(mask)?;
     }
     let mut enemy_field = DistanceField::new()?;
-    enemy_field.compute(&enemy_walls, cambc::map::spawn_region(Team::Enemy)?, &mut Bitboard::new()?, 1000)?;
+    enemy_field.compute(
+        &enemy_walls,
+        cambc::map::spawn_region(Team::Enemy)?,
+        &mut Bitboard::new()?,
+        1000,
+    )?;
 
     // (distance, value, spot) per group, for each list.
     let mut gold = Vec::new();
@@ -101,35 +125,74 @@ fn rank_spots() -> Result<(Vec<Vec2>, Vec<Vec2>)> {
     for group in cambc::map::camp_groups()? {
         let camps = group.camps();
         let Some(first) = camps.first() else { continue };
-        let dist = camps.iter().map(|c| field.get(c.spawn_position()).unwrap_or(DistanceField::UNREACHABLE)).min().unwrap_or(DistanceField::UNREACHABLE);
-        if dist == DistanceField::UNREACHABLE { continue; }
-        let enemy_dist = camps.iter().map(|c| enemy_field.get(c.spawn_position()).unwrap_or(DistanceField::UNREACHABLE)).min().unwrap_or(DistanceField::UNREACHABLE);
-        if HOTSPOT_OWN_HALF && (enemy_dist as f32) <= dist as f32 * HOTSPOT_SAFETY { continue; }
+        let dist = camps
+            .iter()
+            .map(|c| {
+                field
+                    .get(c.spawn_position())
+                    .unwrap_or(DistanceField::UNREACHABLE)
+            })
+            .min()
+            .unwrap_or(DistanceField::UNREACHABLE);
+        if dist == DistanceField::UNREACHABLE {
+            continue;
+        }
+        let enemy_dist = camps
+            .iter()
+            .map(|c| {
+                enemy_field
+                    .get(c.spawn_position())
+                    .unwrap_or(DistanceField::UNREACHABLE)
+            })
+            .min()
+            .unwrap_or(DistanceField::UNREACHABLE);
+        if HOTSPOT_OWN_HALF && (enemy_dist as f32) <= dist as f32 * HOTSPOT_SAFETY {
+            continue;
+        }
         let (mut g, mut m, mut monolith) = (0, 0, false);
         for camp in camps {
             let (cg, cm) = rewards(camp.kind());
-            g += cg; m += cm;
+            g += cg;
+            m += cm;
             monolith |= camp.kind() == cambc::CampType::Monolith;
         }
         let spot = first.spawn_position();
-        if g > 0 && !monolith { gold.push((dist, g, spot)); }
-        if m > 0 { gems.push((dist, m, spot)); }
+        if g > 0 && !monolith {
+            gold.push((dist, g, spot));
+        }
+        if m > 0 {
+            gems.push((dist, m, spot));
+        }
     }
     // Closer first; ties go to the bigger reward.
-    for list in [&mut gold, &mut gems] { list.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1))); }
-    Ok((gold.iter().map(|&(_, _, s)| s).collect(), gems.iter().map(|&(_, _, s)| s).collect()))
+    for list in [&mut gold, &mut gems] {
+        list.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    }
+    Ok((
+        gold.iter().map(|&(_, _, s)| s).collect(),
+        gems.iter().map(|&(_, _, s)| s).collect(),
+    ))
 }
 
 fn encode_plan(picks: &[ChampionDraft], (gold, gems): &(Vec<Vec2>, Vec<Vec2>)) -> Vec<u8> {
-
-    let mut carries: Vec<ChampionDraft> = picks.iter().copied().filter(|&p| !is_follower(p)).collect();
+    let mut carries: Vec<ChampionDraft> =
+        picks.iter().copied().filter(|&p| !is_follower(p)).collect();
     carries.sort_by_key(|&p| carry_order(p));
     // Carry i gets the i-th closest spot on top (i mod squads), then the rest closest first.
     let rotate = |list: &[Vec2], i: usize| -> Vec<Vec2> {
-        if list.is_empty() { return Vec::new(); }
-        let i = if HOTSPOT_SQUADS > 0 { i % HOTSPOT_SQUADS } else { i };
+        if list.is_empty() {
+            return Vec::new();
+        }
+        let i = if HOTSPOT_SQUADS > 0 {
+            i % HOTSPOT_SQUADS
+        } else {
+            i
+        };
         let top = list[i % list.len()];
-        std::iter::once(top).chain(list.iter().copied().filter(|&s| s != top)).take(LIST_LEN).collect()
+        std::iter::once(top)
+            .chain(list.iter().copied().filter(|&s| s != top))
+            .take(LIST_LEN)
+            .collect()
     };
     let mut bytes = vec![MAGIC, VERSION, 0];
     let write = |bytes: &mut Vec<u8>, pick: ChampionDraft, role: u8, slot: usize| {
@@ -137,15 +200,24 @@ fn encode_plan(picks: &[ChampionDraft], (gold, gems): &(Vec<Vec2>, Vec<Vec2>)) -
         bytes.push(role);
         for list in [rotate(gold, slot), rotate(gems, slot)] {
             bytes.push(list.len() as u8);
-            for s in list { bytes.push(s.x as u8); bytes.push(s.y as u8); }
+            for s in list {
+                bytes.push(s.x as u8);
+                bytes.push(s.y as u8);
+            }
         }
         bytes[2] += 1;
     };
-    for (slot, &pick) in carries.iter().enumerate() { write(&mut bytes, pick, 0, slot); }
+    for (slot, &pick) in carries.iter().enumerate() {
+        write(&mut bytes, pick, 0, slot);
+    }
     let mut follower = 0;
     for &pick in picks.iter().filter(|&&p| is_follower(p)) {
         // With no carries yet, a follower just takes its own slot.
-        let slot = if carries.is_empty() { follower } else { follower % carries.len() };
+        let slot = if carries.is_empty() {
+            follower
+        } else {
+            follower % carries.len()
+        };
         write(&mut bytes, pick, 1, slot);
         follower += 1;
     }
@@ -157,14 +229,22 @@ pub fn my_spots() -> Option<&'static (Vec<Vec2>, Vec<Vec2>)> {
     thread_local! {
         static SPOTS: OnceCell<Option<&'static (Vec<Vec2>, Vec<Vec2>)>> = const { OnceCell::new() };
     }
-    SPOTS.with(|cell| *cell.get_or_init(|| {
-        let me = cambc::self_champion().ok().flatten()?.champion_name().ok()?;
-        parse(cambc::draft_memory().bytes(), me).map(|spots| &*Box::leak(Box::new(spots)))
-    }))
+    SPOTS.with(|cell| {
+        *cell.get_or_init(|| {
+            let me = cambc::self_champion()
+                .ok()
+                .flatten()?
+                .champion_name()
+                .ok()?;
+            parse(cambc::draft_memory().bytes(), me).map(|spots| &*Box::leak(Box::new(spots)))
+        })
+    })
 }
 
 fn parse(bytes: &[u8], me: ChampionType) -> Option<(Vec<Vec2>, Vec<Vec2>)> {
-    if bytes.len() < 3 || bytes[0] != MAGIC || bytes[1] != VERSION { return None; }
+    if bytes.len() < 3 || bytes[0] != MAGIC || bytes[1] != VERSION {
+        return None;
+    }
     let mine = draft_of(me) as u8;
     let mut at = 3;
     for _ in 0..bytes[2] {
@@ -175,11 +255,17 @@ fn parse(bytes: &[u8], me: ChampionType) -> Option<(Vec<Vec2>, Vec<Vec2>)> {
             let n = *bytes.get(at)? as usize;
             at += 1;
             for _ in 0..n {
-                list.push(Vec2::new(*bytes.get(at)? as i32, *bytes.get(at + 1)? as i32));
+                list.push(Vec2::new(
+                    *bytes.get(at)? as i32,
+                    *bytes.get(at + 1)? as i32,
+                ));
                 at += 2;
             }
         }
-        if pick == mine { let [gold, gems] = lists; return Some((gold, gems)); }
+        if pick == mine {
+            let [gold, gems] = lists;
+            return Some((gold, gems));
+        }
     }
     None
 }

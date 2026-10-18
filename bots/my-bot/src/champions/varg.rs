@@ -16,7 +16,13 @@ pub struct Varg {
 impl ChampionAi for Varg {
     // Build: AD max, one Durability late; Treasure / Monster -> Bruiser / Durability.
     fn build(&self) -> &'static [I] {
-        &[I::TreasureShardOfStrength, I::MonsterShardOfStrength, I::BruiserShardOfStrength, I::BruiserShardOfHealth, I::PowerShardOfStrength]
+        &[
+            I::TreasureShardOfStrength,
+            I::MonsterShardOfStrength,
+            I::BruiserShardOfStrength,
+            I::BruiserShardOfHealth,
+            I::PowerShardOfStrength,
+        ]
     }
 
     // Shield when we lost health since last turn (camps or enemies are hitting us), or an enemy
@@ -26,15 +32,24 @@ impl ChampionAi for Varg {
         let health = me.health()?;
         let hit = self.last_health.is_some_and(|last| health < last);
         self.last_health = Some(health);
-        let Some(shield) = me.abilities().iter().find(|a| a.is_shield()) else { return Ok(()) };
-        if !shield.is_ready()? { return Ok(()); }
+        let Some(shield) = me.abilities().iter().find(|a| a.is_shield()) else {
+            return Ok(());
+        };
+        if !shield.is_ready()? {
+            return Ok(());
+        }
         let mut threatened = hit;
         if !threatened && SHIELD_ENEMY_WITHIN > 0 {
             for enemy in &crate::common::sight()?.enemies {
-                if distance(enemy.position()?, me.position()?) <= SHIELD_ENEMY_WITHIN { threatened = true; break; }
+                if distance(enemy.position()?, me.position()?) <= SHIELD_ENEMY_WITHIN {
+                    threatened = true;
+                    break;
+                }
             }
         }
-        if threatened { shield.cast_untargeted()?; }
+        if threatened {
+            shield.cast_untargeted()?;
+        }
         Ok(())
     }
 }

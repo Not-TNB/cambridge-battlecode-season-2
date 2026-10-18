@@ -10,6 +10,11 @@ pub struct Marcella;
 impl ChampionAi for Marcella {
     // Build: HP max; Durability -> Power / Bruiser.
     fn build(&self) -> &'static [I] {
-        &[I::DurabilityShardOfHealth, I::PowerShardOfHealth, I::BruiserShardOfHealth, I::PowerShardOfHealth]
+        &[
+            I::DurabilityShardOfHealth,
+            I::PowerShardOfHealth,
+            I::BruiserShardOfHealth,
+            I::PowerShardOfHealth,
+        ]
     }
 }

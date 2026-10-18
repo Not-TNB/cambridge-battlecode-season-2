@@ -10,6 +10,11 @@ pub struct Ren;
 impl ChampionAi for Ren {
     // Build: HP max with some AP for retaliation; Bruiser / Durability.
     fn build(&self) -> &'static [I] {
-        &[I::BruiserShardOfHealth, I::DurabilityShardOfHealth, I::PowerShardOfFocus, I::PowerShardOfHealth]
+        &[
+            I::BruiserShardOfHealth,
+            I::DurabilityShardOfHealth,
+            I::PowerShardOfFocus,
+            I::PowerShardOfHealth,
+        ]
     }
 }

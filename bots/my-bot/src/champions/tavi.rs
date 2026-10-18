@@ -11,8 +11,15 @@ pub struct Tavi;
 impl ChampionAi for Tavi {
     // Build: AP max -> AD (HP only at base, skipped: HP bought in the field doesn't heal); Power -> Bruiser.
     fn build(&self) -> &'static [I] {
-        &[I::PowerShardOfFocus, I::PowerShardOfFocus, I::BruiserShardOfStrength, I::PowerShardOfStrength]
+        &[
+            I::PowerShardOfFocus,
+            I::PowerShardOfFocus,
+            I::BruiserShardOfStrength,
+            I::PowerShardOfStrength,
+        ]
     }
 
-    fn shops_anywhere(&self) -> bool { true }
+    fn shops_anywhere(&self) -> bool {
+        true
+    }
 }

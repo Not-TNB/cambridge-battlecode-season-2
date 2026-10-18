@@ -13,8 +13,13 @@ pub enum ClassKind {
 
 impl ClassKind {
     pub const ALL: [ClassKind; 7] = [
-        ClassKind::Assassin, ClassKind::DpsAd, ClassKind::DpsAp, ClassKind::Healer,
-        ClassKind::Tank, ClassKind::Bruiser, ClassKind::AssassinAndDpsAp,
+        ClassKind::Assassin,
+        ClassKind::DpsAd,
+        ClassKind::DpsAp,
+        ClassKind::Healer,
+        ClassKind::Tank,
+        ClassKind::Bruiser,
+        ClassKind::AssassinAndDpsAp,
     ];
 
     // Attack-damage carries: the champions camp rewards are funnelled to.

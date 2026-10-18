@@ -9,6 +9,10 @@ pub struct Vendetta;
 impl ChampionAi for Vendetta {
     // Build: AD max; Power / Bruiser (Treasure only if far ahead, not modelled).
     fn build(&self) -> &'static [I] {
-        &[I::PowerShardOfStrength, I::BruiserShardOfStrength, I::PowerShardOfStrength]
+        &[
+            I::PowerShardOfStrength,
+            I::BruiserShardOfStrength,
+            I::PowerShardOfStrength,
+        ]
     }
 }

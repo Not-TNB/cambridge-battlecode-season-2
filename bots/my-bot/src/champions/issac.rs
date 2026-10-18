@@ -9,6 +9,12 @@ pub struct Issac;
 impl ChampionAi for Issac {
     // Build: AD -> some hp; Treasure / Monster -> Power / Bruiser.
     fn build(&self) -> &'static [I] {
-        &[I::TreasureShardOfStrength, I::MonsterShardOfStrength, I::PowerShardOfStrength, I::BruiserShardOfHealth, I::PowerShardOfStrength]
+        &[
+            I::TreasureShardOfStrength,
+            I::MonsterShardOfStrength,
+            I::PowerShardOfStrength,
+            I::BruiserShardOfHealth,
+            I::PowerShardOfStrength,
+        ]
     }
 }

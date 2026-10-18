@@ -10,6 +10,12 @@ pub struct Stellar;
 impl ChampionAi for Stellar {
     // Build: AP max; Power / Treasure -> Power / Bruiser.
     fn build(&self) -> &'static [I] {
-        &[I::PowerShardOfFocus, I::TreasureShardOfFocus, I::PowerShardOfFocus, I::BruiserShardOfFocus, I::PowerShardOfFocus]
+        &[
+            I::PowerShardOfFocus,
+            I::TreasureShardOfFocus,
+            I::PowerShardOfFocus,
+            I::BruiserShardOfFocus,
+            I::PowerShardOfFocus,
+        ]
     }
 }

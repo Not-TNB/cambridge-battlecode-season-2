@@ -10,6 +10,11 @@ pub struct Ryth;
 impl ChampionAi for Ryth {
     // Build: HP max; Power / Bruiser / Durability.
     fn build(&self) -> &'static [I] {
-        &[I::PowerShardOfHealth, I::BruiserShardOfHealth, I::DurabilityShardOfHealth, I::PowerShardOfHealth]
+        &[
+            I::PowerShardOfHealth,
+            I::BruiserShardOfHealth,
+            I::DurabilityShardOfHealth,
+            I::PowerShardOfHealth,
+        ]
     }
 }

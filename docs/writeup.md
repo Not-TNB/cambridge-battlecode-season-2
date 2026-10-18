@@ -11,7 +11,7 @@ A running log of every feature and change to `bots/my-bot`, written as we go so 
 | `src/bot.rs` | The turn skeleton shared by every champion: stat choice, recall, shopping, then the champion's hooks |
 | `src/common.rs` | Shared helpers: per-turn caches (`sight`, `blocked_tiles`), pathing, attacks, ability casting, fighting, banking gems, farming (`farm_plan`), wards, the `TRACE` debug log |
 | `src/safety.rs` | Enemy sightings memory, recalls that wait for a safe channel, retreating from losing fights |
-| `src/collect.rs` | Capture holding, escorting (tanks and Willow), and the camp-fight and greedy experiments (off) |
+| `src/collect.rs` | Capture holding, escorting (tanks and Willow), camp-fight estimates, and greedy collection |
 | `src/champions/mod.rs` | The `ChampionAi` trait (decision hooks with shared defaults) and `for_champion` dispatch |
 | `src/champions/<name>.rs` | One file per champion (12, with Cassi and Issac separate) with its kit summary and any overrides |
 
@@ -592,8 +592,8 @@ Screening, 84 games each vs baseline. "Alone" means every other new feature off;
 | `RETREAT_FROM_LOSING` | From a fight we'd lose, walk to tiles nothing reaches within 2 turns (dashing, leaning home) instead of holding just outside reach (`keep_distance`, now the fallback) | 38 | 58 |
 | `ESCORT_FOLLOW` | Tanks and Willow walk back to the nearest damage dealer when more than 4 away | 34 | |
 | `ESCORT_RECALL` | Tanks and Willow recall when every damage dealer in sight is recalling | 35 | |
-| `CAMP_FIGHT` | Simulate fighting a camp group from here (us and allies within 4 vs every live camp); skip groups we'd not clear with 35% health left | 25 | 49 |
-| `GREEDY` | With no enemy within 2 turns, safe groups (clusters, winnable camps, uncaptured rewards) within 8 tiles come first, before chasing and whatever the phase | 23 | |
+| `CAMP_FIGHT` | Simulate fighting a camp group from here; nearby visible allies within 7 tiles contribute basic and cooldown-averaged ability damage, and incoming camp damage is shared. Champions retreat individually at 35% health | 25 | 49 |
+| `GREEDY` | Nearby clusters and uncaptured rewards within 8 tiles can come before chasing and the farming phase; ordinary winnable camps are excluded (`GREEDY_CAMPS = false`) | 23 | |
 | `GO_HOME_NEEDS_ENEMY` | The literal reading of "don't recall when no enemy is in vision": skip the go-home recall with no enemy in sight | (171/252 on the final set, deaths 1,608 vs 1,226) | |
 
 Also, unswitched: **lowest health first.** Camps in range, camps for spells and chase targets are picked weakest first (chase ties go to the quicker kill).
@@ -638,6 +638,22 @@ Also, unswitched: **lowest health first.** Camps in range, camps for spells and 
   - Allies can't see each other's sightings or wards: shared memory could carry enemy positions.
   - `GREEDY` might work as a narrow tie-breaker (a cluster no further than the nearest camp) rather than an override.
   - Rows loses from both sides in every version; worth a look on its own.
+
+## 25. Farm target diagnostics, team camp estimates, and retreat attacks
+**Commit:** Uncommitted
+
+- **Why:** Replay traces showed target switching, repeated selection of camps judged unwinnable, and champions fleeing without using melee attacks that were still available. The verbose trace was also making it harder to isolate why a remembered target changed.
+- **Farm diagnostics:** `TRACE` is off, and farm-specific per-turn tags/checkpoints were removed. A concise `farm-target-change` line is emitted only when a champion with a remembered target changes or loses it; the reason identifies the exclusion or priority that displaced it.
+- **Farm target selection:** damaged, eligible camps prefer the nearest damaged target when it is within 3 tiles of the nearest regular goal. A reward group already being captured by an ally is excluded to avoid competing for its tile and split. Below 35% health, a champion may stay to capture a nearby available reward if it is not in imminent danger and has enough fuel to complete the checks and pathing; otherwise the normal recall remains.
+- **Camp-fight estimate (`collect.rs`):**
+  - Nearby visible allies contribute basic damage plus damaging abilities averaged over cooldown. Ability damage comes from the SDK's `damage_amount()`, which includes Focus scaling; it is not multiplied by Focus again.
+  - The simulation tracks each champion's health and 35% retreat threshold separately. When a champion reaches that threshold, it stops contributing damage; the rest of the team can keep fighting while above their own thresholds.
+-  - Groups whose visible camps are judged unwinnable are excluded from the current farm goals; there is no special wait or help-request behavior.
+- **Enemy camp avoidance:** a visible enemy only excludes a nearby camp if the existing duel estimate does not expect us to beat that enemy. The duel check reuses its cached fight view, and only builds one with ample fuel remaining; when fuel is tight, it keeps the existing conservative avoidance behavior.
+- **Greedy collection:** `GREEDY_CAMPS` is now false. Nearby greedy selection still includes eligible uncaptured rewards and cluster groups, but does not promote ordinary camps merely because the fight estimate considers them winnable. This does not disable the separate damaged-camp farming preference.
+- **Retreating melee attacks (`safety.rs`):** before retreating to recall, a melee champion tries a legal in-range basic attack and uses the shared strike logic, which can apply a ready attack reset for a second hit. Retreat movement and recall still proceed afterward.
+- **Results:** `cargo check` and `git diff --check` pass. No replay batch has yet been run to measure the enemy avoidance or retreat behavior.
+- **Open questions / follow-ups:** the camp estimate remains a heuristic: it assumes nearby allies engage, splits camp damage across active allies, and averages abilities rather than simulating their exact casts and ranges.
 
 ---
 
