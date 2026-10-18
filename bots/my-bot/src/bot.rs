@@ -1,13 +1,11 @@
 // Turn skeleton shared by every champion. main.rs dispatches here after the draft; champion-specific
-// decisions live in champions/<name>.rs and shared helpers in common.rs.
+// decisions live in champions/<name>.rs and shared helpers in common/.
 use crate::champions::{self, ChampionAi};
-use crate::common::me;
-use crate::{collect, common, safety};
+use crate::common::{self, collect, me, safety};
 use cambc::{ItemType as Item, Result, Team};
 
 // Fuel to keep in hand before starting a pathfinding step (bank_gems / farm).
 const MIN_FUEL_FOR_PATHING: u64 = 40_000;
-const MIN_FUEL_FOR_LOW_HP_CAPTURE_CHECK: u64 = MIN_FUEL_FOR_PATHING + 10_000;
 // Fuel to keep in hand before end-of-turn extras (sightings, wards; up to ~20k).
 const SPARE_FUEL: u64 = 30_000;
 
@@ -147,6 +145,7 @@ impl Bot {
         let at_spawn = cambc::map::spawn_region(Team::Ally)?.is_set(me.position()?)?;
         if at_spawn {
             self.last_at_spawn_round = cambc::round_number()?;
+            collect::forget_lost_camps();
         }
         if at_spawn || ai.shops_anywhere() {
             self.buy_items(ai.build())?;
@@ -164,21 +163,8 @@ impl Bot {
         ai.support()?;
         common::checkpoint("turn-support");
 
-        let mut low_hp_stay_for_capture = false;
         if !at_spawn && me.health()? < me.max_health()? * 0.35 {
-            low_hp_stay_for_capture = cambc::fuel_remaining()? >= MIN_FUEL_FOR_LOW_HP_CAPTURE_CHECK
-                && !safety::imminent_danger()?
-                && common::nearby_capture_reward()?
-                && cambc::fuel_remaining()? >= MIN_FUEL_FOR_PATHING;
-            if !low_hp_stay_for_capture {
-                common::trace("low-hp");
-                return safety::retreat_and_recall();
-            }
-            common::trace("low-hp-capture");
-        }
-        // Tanks and Willow go home with the damage dealers they escort.
-        if !at_spawn && collect::escort_recalls()? {
-            common::trace("escort-recall");
+            common::trace("low-hp");
             return safety::retreat_and_recall();
         }
 
@@ -198,10 +184,9 @@ impl Bot {
         let rounds_away = cambc::round_number()?.saturating_sub(self.last_at_spawn_round);
         let wants_home = !at_spawn
             && !capturing
-            && !low_hp_stay_for_capture
             && crate::common::base_willingness(ai.shops_anywhere(), rounds_away)? >= 1.0;
         common::checkpoint("turn-base-check");
-        if wants_home && (!safety::GO_HOME_NEEDS_ENEMY || !common::sight()?.enemies.is_empty()) {
+        if wants_home {
             if crate::common::BANK_BEFORE_RECALL
                 && me.gem_count()? > 0
                 && crate::common::unlocked_altar_within(crate::common::BANK_BEFORE_RECALL_TILES)?
@@ -229,14 +214,6 @@ impl Bot {
             return Ok(());
         }
         common::checkpoint("turn-farm-check");
-
-        if !capturing {
-            if let Some(goal) = collect::escort_goal()? {
-                common::trace("escort");
-                common::move_towards_closest(goal)?;
-                return Ok(());
-            }
-        }
 
         ai.farm()?;
 

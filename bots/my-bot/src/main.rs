@@ -1,12 +1,10 @@
 // Dispatch draft and gameplay. Rust propagates SDK errors explicitly.
 mod bot;
 mod champions;
-mod collect;
 mod common;
 mod constants;
 mod draft;
-mod hotspots;
-mod safety;
+mod regions;
 use std::cell::Cell;
 
 thread_local! {

@@ -1,9 +1,13 @@
 // Staying alive: remembering where enemies were, recalling only when nothing can reach us during
 // the channel, and retreating to safer ground from fights we'd lose.
-use crate::common::{
-    ally_spawn_centre, distance, enemy_threats_by_name, fightable_enemies, me,
-    move_towards_closest_with_pull, strike, trace, Threat, Threats, RETREAT_HOME_PULL,
-};
+use super::attack::strike;
+use super::base::{ally_spawn_centre, RETREAT_HOME_PULL};
+use super::fight::fightable_enemies;
+use super::me;
+use super::movement::move_towards_closest_with_pull;
+use super::threats::{enemy_threats_by_name, Threat, Threats};
+use super::trace::trace;
+use super::world::distance;
 use cambc::{Bitboard, ChampionType, Result, Vec2};
 
 // An enemy that went out of sight still counts as a threat for this many rounds, from where we
@@ -119,13 +123,9 @@ pub fn retreat_and_recall() -> Result<()> {
     me.recall()
 }
 
-// Taken literally, "don't recall when no enemy is in vision": skip the go-home recall (gold and
-// health pull, bot.rs) while no enemy is in sight. The low-health recall is unaffected.
-pub const GO_HOME_NEEDS_ENEMY: bool = false;
-
 // From a fight we'd lose, walk (dashing, leaning towards base) to tiles no known threat reaches
 // within RETREAT_SAFE_TURNS turns, instead of holding just outside the enemies' reach
-// (common::keep_distance, the fallback when this can't move). Returns whether we moved.
+// (fight::keep_distance, the fallback when this can't move). Returns whether we moved.
 pub const RETREAT_FROM_LOSING: bool = true;
 const RETREAT_SAFE_TURNS: u32 = 2;
 
@@ -148,19 +148,4 @@ pub fn retreat_from_fight() -> Result<bool> {
         trace("retreat-fight");
     }
     Ok(moved)
-}
-
-// An enemy in sight (other than one standing on its own spawn) could hit us within this many turns.
-pub const IMMINENT_TURNS: i32 = 2;
-
-pub fn imminent_danger() -> Result<bool> {
-    let here = me()?.position()?;
-    for enemy in crate::common::fightable_enemies()? {
-        let reach =
-            enemy.attack_range()? + enemy.base_stats()?.base_move_speed as i32 * IMMINENT_TURNS;
-        if distance(enemy.position()?, here) <= reach {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }

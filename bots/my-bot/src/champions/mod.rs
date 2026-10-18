@@ -1,5 +1,5 @@
 // One file per champion. Each implements `ChampionAi`, overriding only the decisions where
-// its kit should play differently; everything else falls back to the shared logic in common.rs.
+// its kit should play differently; everything else falls back to the shared logic in common/.
 use cambc::{ChampionType, ItemType, Result};
 
 mod cassi;

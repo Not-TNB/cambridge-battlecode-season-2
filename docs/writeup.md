@@ -8,14 +8,21 @@ A running log of every feature and change to `bots/my-bot`, written as we go so 
 |---|---|
 | `src/main.rs` | Entry point: draft vs play dispatch, `random_number` / `random_seed` (with the per-build `SEED`) |
 | `src/draft.rs`, `src/constants.rs` | Draft logic and the champion class table |
+| `src/regions.rs` | Computed in the draft, read in play from the draft memory: which camp groups we can walk, dash or not get to |
+| `src/common/rally.rs` | Elk rallies through the team's shared memory, on maps with enough elk |
 | `src/bot.rs` | The turn skeleton shared by every champion: stat choice, recall, shopping, then the champion's hooks |
-| `src/common.rs` | Shared helpers: per-turn caches (`sight`, `blocked_tiles`), pathing, attacks, ability casting, fighting, banking gems, farming (`farm_plan`), wards, the `TRACE` debug log |
-| `src/safety.rs` | Enemy sightings memory, recalls that wait for a safe channel, retreating from losing fights |
-| `src/collect.rs` | Capture holding, escorting (tanks and Willow), camp-fight estimates, and greedy collection |
+| `src/common/mod.rs` | Shared helpers, one file per topic; `mod.rs` re-exports what the rest of the crate uses (`crate::common::...`) |
+| `src/common/world.rs`, `movement.rs` | Per-turn caches (`sight`, `blocked_tiles`), camp groups, distances; walking, dashing and `WalkGrid` |
+| `src/common/attack.rs`, `threats.rs`, `duel.rs` | Attacks and ability casting; what could damage us (`Threats`); 1v1 estimates (`plan_duel`) and the per-turn `FightView` |
+| `src/common/fight.rs`, `chase.rs` | Fighting visible enemies (standoffs, backing off, kiting); picking, dashing at and following a chase target |
+| `src/common/base.rs`, `camps.rs`, `farm.rs`, `ward.rs` | Banking gems and the go-home pull; fighting and capturing one camp group; the farm plan (`farm_plan`); placing wards |
+| `src/common/trace.rs` | The `TRACE` debug log and `checkpoint` fuel profiler |
+| `src/common/safety.rs` | Enemy sightings memory, recalls that wait for a safe channel, retreating from losing fights |
+| `src/common/collect.rs` | Capture holding, escorting (tanks and Willow only chase near a damage dealer), camp-fight estimates |
 | `src/champions/mod.rs` | The `ChampionAi` trait (decision hooks with shared defaults) and `for_champion` dispatch |
 | `src/champions/<name>.rs` | One file per champion (12, with Cassi and Issac separate) with its kit summary and any overrides |
 
-Each turn, `bot.rs` runs, in order: skip if unable to act, then shop (`shops_anywhere`), then `support()`, then recall when below 35% health, then `fight()`, then the go-home recall, then `bank_gems()` when `should_bank()`, otherwise `farm()`; with fuel to spare it then records enemy sightings and places a ward. To give a champion its own behaviour, override the hook in its file and leave the rest to `common.rs`.
+Each turn, `bot.rs` runs, in order: skip if unable to act, then shop (`shops_anywhere`), then `support()`, then recall when below 35% health, then `fight()`, then the go-home recall, then `bank_gems()` when `should_bank()`, otherwise `farm()`; with fuel to spare it then records enemy sightings and places a ward. To give a champion its own behaviour, override the hook in its file and leave the rest to `common/`.
 
 ---
 
@@ -545,7 +552,7 @@ Every champion is tagged with a class in `constants.rs`:
 **Uncommitted.** Requested by Tristan after games against another team's bot (not in the repo, so not reproducible here).
 
 - **Testing change:** all 21 maps (old, new and custom) × both sides × 6 seeds = 252 games, vs the working tree at the start of this entry (entries 15–22, called "baseline" below). One run's standard error is about ±7 wins. Single features were first screened on 2 seeds (84 games, ±4.6). Matches take 1–2 s each, so a 252-game run takes about 5 minutes.
-- **Debug trace (`TRACE` in `common.rs`):** when on, every turn prints one line with our tile, health, fuel and the branches taken (`trace("tag")`), and `checkpoint("tag")` records fuel at a point for profiling. A script then finds runs of 8+ turns on one tile ("standing still", not counting camp fights) and 6+ turns alternating between two tiles ("back and forth"). Caveats found the hard way:
+- **Debug trace (`TRACE` in `common/trace.rs`):** when on, every turn prints one line with our tile, health, fuel and the branches taken (`trace("tag")`), and `checkpoint("tag")` records fuel at a point for profiling. A script then finds runs of 8+ turns on one tile ("standing still", not counting camp fights) and 6+ turns alternating between two tiles ("back and forth"). Caveats found the hard way:
   - Formatting a float (`{:.0}`) costs ~9k fuel in wasm, so the trace line prints integers.
   - A trace line that runs out of fuel suspends the champion into its next turn, so traced runs are for diagnosis only, never for win rates.
 
@@ -654,6 +661,114 @@ Also, unswitched: **lowest health first.** Camps in range, camps for spells and 
 - **Retreating melee attacks (`safety.rs`):** before retreating to recall, a melee champion tries a legal in-range basic attack and uses the shared strike logic, which can apply a ready attack reset for a second hit. Retreat movement and recall still proceed afterward.
 - **Results:** `cargo check` and `git diff --check` pass. No replay batch has yet been run to measure the enemy avoidance or retreat behavior.
 - **Open questions / follow-ups:** the camp estimate remains a heuristic: it assumes nearby allies engage, splits camp damage across active allies, and averages abilities rather than simulating their exact casts and ranges.
+
+---
+
+## 26. Regions: camp groups we can't walk to (`regions.rs`)
+**Commit:** Uncommitted
+
+- **Why:** on ambush (and citadel, the same map file) a camp group sits in a room sealed off by walls and one-tile strips of holes. Champions picked it as their farm target, found no walking path (`DistanceField` unreachable), took no step, and kept the target (the farm-target memory keeps a target until it's within attack range). After their first recall every champion of both teams stood on spawn for the remaining ~1,740 rounds.
+- **Dash rule, measured against the engine on ambush** (the rules only say "a legal dash path"): up to 2 steps in any of the 8 directions; the middle tile may be a hole but not a wall; the landing tile must be free ground. Straight, knight-move and vertical dashes across the holes worked both ways; a dash whose only middle tile is a wall, or across a wall column, failed with "Destination is unreachable within movement range".
+- **Draft (first turn, ~1M fuel):** for each camp group: **Walk** (a camp tile is reachable on foot from our spawn), **Dash** (the group's pocket has a tile within 2 of our region with a legal dash path), **Crystal** (within 3: teleport-crystal range, terrain ignored) or **Unreachable**, with the crossing's launch and landing tiles (launch closest to our spawn on foot). Stored in the draft memory at offset 512, after the hot-spot plan: `b'R'`, version, count, then 7 bytes per group. Pockets reached only through another pocket count as unreachable.
+  - Fuel: 20–90k on maps without pockets, ~400k on ambush (two 33-tile pockets). Rust-side loops are metered too: scanning a whole-map buffer for one pocket cost ~400k and checking every launch/landing pair ~260k, so the host floods the pocket (`reachable_tiles`), marks launch candidates by growing the pocket mask with shifts, and the search stops at the first legal crossing. Pockets left unsearched below 150k fuel count as unreachable, and classification only starts with 500k (the first draft turn), so the pick is never lost.
+  - The draft instance keeps its state between draft turns (checked), so the table is computed once and re-submitted with the hot-spot plan before each pick (a submit replaces the whole memory).
+- **Play:**
+  - `farm_statics` drops groups this champion can't reach (non-dashers: anything but Walk; dashers: Crystal and Unreachable), so they're never goals, greedy targets or hot spots.
+  - `move_towards_closest` crosses when no goal is in our region (farming, banking, anything): walk to the launch tile, wait for the dash, dash to a free tile across (the planned landing first). Any free tile, not just the planned one: two champions crossing opposite ways each stood on the other's landing tile for ~85 turns. Leaving works the same way. On maps without dash pockets this returns at once: building the region masks there cost a dasher its move and lost games (`eight`/`spokes` 6/28 vs 18/28 with regions off; 29/56 against regions-off once skipped).
+  - Fallback: a farm target with no walking path is skipped for 20 rounds (`UNREACHABLE_TARGET_ROUNDS`). It didn't fire in traced games on eight, moat or spokes.
+  - Teleport crystals are classified but not bought or used yet.
+- **Results** (vs the committed bot `49388ec`, 29 maps × both sides × seeds 1–3, 174 games): **89/174**; ambush/citadel **10/12** with 9,004 gems submitted vs 720; other maps 79/162 (most exactly 3/6, i.e. unchanged play). Traced ambush vs committed, seeds 1–10 both sides: 20/20.
+- **Open questions / follow-ups:**
+  - On ambush side B gathers far fewer gems than side A (288–960 vs ~1,000). The traced games show 16.5k turns of back-and-forth there, from greedy collecting (`GREEDY`) flipping with the phase filter at the edge of `GREEDY_RADIUS` (a cluster at 57,51 vs a camp at 68,55, every turn). The same flip is in the original replay's log, so it predates this change.
+  - One untraced game (ambush seed 3, side B) still went badly: five champions earned almost nothing after round ~150 while hovering near the side-B pocket crossing. The trace (even inside `debug_block`) changes the game, so it couldn't be reproduced; three dashers sharing a 1-tile-wide crossing is the likely suspect.
+  - Crystals (buy one when a valuable Crystal group is nearby), and multi-hop pockets.
+
+---
+
+## 27. Back-and-forth and fuel: camp-fight verdicts, farm-plan caching
+**Commit:** Uncommitted
+
+- **Why:** traced games (24 games, 12 maps) had 3,016 turns of back-and-forth. Three causes, from the farm-target diagnostics: greedy collecting vs the phase filter at the edge of `GREEDY_RADIUS` (straight-line distance; the walk round a wall goes 8 → 9 away), camp-fight verdicts that changed with every step (~280 flips), and dead camp vs attack range (54).
+- **Camp-fight verdict (`collect.rs`):** a camp counts as hitting us if its attack range is at least ours (to fight it we stand within our own range), not only if it covers our current tile: the group was "winnable" from just outside a camp's range and lost one step in. A group judged lost stays lost for 10 rounds (`CAMP_LOSS_MEMORY_ROUNDS`), also while out of sight (`recently_lost` in `farm_plan`), and is forgotten on our spawn. Back-and-forth 3,016 → 1,550 turns; **103/174 vs the previous build**.
+- **Tried and dropped:** walking distances per camp group (one `DistanceField` per group, from its camp tiles, built in spare fuel, read at our tile) for the greedy radius and target ranking, with a 3-step greedy hysteresis, and a flip guard (going back to a target left within 4 rounds locks it for 10). Back-and-forth fell to ~100 turns, but **79/174** and, after cutting its allocations, **69/174** vs the camp-fight build; with walking off, 81/174. The lookups (1–3k a turn) cost more than the oscillation did while fuel was short. The flip guard didn't stop the dead-camp flip (the dead camp leaves the candidates, which releases the lock). Worth retrying now that fuel isn't short.
+- **Fuel:** 27% of champion turns ran out of fuel (over half on lanes and scatter). Profiling showed 84% of turns had no enemy in fight range, yet the fight code built the whole farm plan (~32k) to check `greedy`; half of all plans were never used (we fought, banked, or attacked a camp already in range).
+  - The fight code only asks for the plan when there is a lost chase target to follow, and checks `imminent_danger` (cheap) before it.
+  - Camp-fight verdicts (~12k a plan: ~6k for damage estimates, ~4.7k per group judged): camp stats are read once per camp kind (camps respawn with base values), damage estimates (which read every ability) are kept per champion for 10 rounds, and a group's verdict is reused while its inputs (camp healths and whether each can hit us, our health/damage/floor, the allies in sight) are unchanged.
+  - The farm plan is reused for up to 5 rounds while our tile and health, the phase, the visible camps' health and the visible enemies' and allies' positions are unchanged.
+  - Out-of-fuel turns 27% → **1%**; mean fuel per completed turn 61.8k → 52.2k (traced).
+- **Results:** vs the camp-fight build, 29 maps × both sides × seeds 1–3: **135/174 (78%)**, gems 146,498 vs 89,474, kills/deaths 1,589/1,093. Only rows is behind (2/6).
+- **Open questions / follow-ups:**
+  - Greedy vs phase flip on ambush side B is still there (~1,900 traced turns); walking distances would fix it, and may now pay off.
+  - Engine error 98 ("No visible entity of this kind occupies the tile") right after a farming step (the attack-after-moving path): 22 in 24 traced games before, 95 now that fewer turns run out of fuel before reaching it. Each costs the rest of a turn.
+  - Fights (~5% of turns) still cost ~25k for the fight view, ~10k of it the 12-step walking grid.
+
+---
+
+## 28. Rewards in sight are always taken; GREEDY off
+**Commit:** Uncommitted
+
+- **GREEDY off** (set by hand): greedy on vs off with entry 27's code, 174 games: 86/174 for greedy on (even), gems 121,564 vs 130,640. Traced, greedy off cut back-and-forth from 2,168 turns to 56 and halved farm-target changes (greedy vs the phase filter at the edge of `GREEDY_RADIUS` was nearly all of it).
+- **Why:** with greedy off, a cleared gold cluster in the gem phase (round 150+) was no farm goal: the phase filter keeps only preferred groups, and only greedy collecting used to add rewards back. On ambush both middle gold clusters were cleared (rounds 226 and 700) and never captured, so they never respawned either (a group respawns only after its reward is claimed).
+- **Change (`farm_plan`):** a cleared group in sight with its reward waiting is the farm goal ahead of the phase filter, damaged camps and greedy (holding a capture we stand on still comes first). It's skipped when an enemy that could reach it within 2 turns isn't one we'd beat 1v1 (the existing `plan_duel` check; below 70k fuel the check is skipped and so is the reward). A "judged lost" memory from while the group was alive no longer blocks its reward. Tanks still leave a reward a carry ally covers, and nobody heads for one an ally stands on.
+- **Results:** ambush replay: every clear captured (the red-side middle cluster 14 times instead of once). vs entry 27 with GREEDY off, 174 games: **106/174 (61%)**, gems 131,432 vs 118,284, behind on no map.
+- **Open questions / follow-ups:** the opening walk on ambush (blue heads for group 10 at 78,56, 39 tiles away in a straight line but ~50 on foot round a wall, and judges it lost on arrival) needs the camp-fight check when the target is chosen, and walking-distance ranking.
+
+---
+
+## 29. Gold on the way in the gem phase (`GEM_PHASE_GOLD_DETOUR`)
+**Commit:** Uncommitted
+
+- **What changed (`farm_plan`):** after round 150 the phase filter skipped gold-only groups (gold clusters) entirely. Now they're farm candidates while they're at most `GEM_PHASE_GOLD_DETOUR` (3) tiles further than the nearest gem goal: on the way, or the closest thing around. They join the candidates instead of replacing the goals (as greedy collecting did), so the farm-target memory keeps the current target while we walk and there's no flip at the threshold. 0 turns it off.
+- **Why:** gold still buys items late on; walking past a gold cluster next to the path wasted it. A fixed schedule ("gold every N rounds") would send champions on long trips for 35 gold.
+- **Results** vs entry 28 (gold skipped), 174 games: detour 3 **102/174 (59%)**, gems 129,384 vs 127,482; detour 6 100/174 (57%). Kept 3.
+
+---
+
+## 30. Elk rallies (`common/rally.rs`, `ELK_RALLY`)
+**Commit:** Uncommitted
+
+- **Why:** two elk have 4,800 health and hit for 120 a round, so the camp-fight check (rightly) judges a lone champion lost and nobody starts the fight. On ambush the six groups with elk were cleared 3 times in 1,916 rounds, the gold and gem clusters 63 times. Two elk are worth 320 gold and 72 gems.
+- **What changed:** a champion that sees an elk group it would lose alone, but would beat with 1–3 more allies like itself (stand-ins at full health next to the group, `collect::winnable_with_standins`), writes it to the team's shared memory (byte 0: group + 1, byte 1: round called). Champions with 60%+ health make the rally group their farm goal (after waiting rewards). Camps only fight back once attacked, so they gather next to it; nobody attacks until the camp-fight check, counting the allies actually there, says we'd win (a rally group is judged afresh every turn, not from the loss memory). The rally ends when the group is cleared or respawning, or after 40 rounds. A group not worth a rally isn't rechecked for 10 rounds.
+- **Per map:** rallies on every map lost overall, **76/174**: 12/12 on ambush/citadel, 6/6 elkring, 5/6 corners, but 0–1/6 on collision, spokes, hedgerows/packs, fragment/rift. Traced, most rallies there timed out without a kill (hedgerows and packs: 21 called, 0 completed): allies arrive late, hurt or not at all, and the stand-ins are optimistic. The winners are maps where elk groups are a large share of the camp groups; the losers have plenty of cheap camps close by.
+- **The bot decides:** each champion counts, once, the camp groups it can reach and how many have elk; rallies are on when at least `ELK_RALLY_MIN_SHARE` (45%) do (ambush, citadel, elkring, corners, eight, moat, spiral, swirl). Chosen on seeds 1–3 (those maps: 33/48); validated on fresh seeds 4–6 vs entry 29: **103/174 (59%)**, gems 137,888 vs 121,216; rally maps **35/48 (73%)**, gems 41,316 vs 26,590; other maps 68/126 (unchanged play, noise).
+- **Ranged champions keep their distance:** while waiting, a champion with attack range above 1 heads for the free tiles exactly at its range from the nearest live elk (the camp tiles if none are free), instead of next to the camps. Checked on ambush: ranged champions mostly wait at distance 3 (Stellar 80 turns, Prism 54), melee next to the camps. On the eight rally maps vs entry 30 before it: 27/48 (even), gems 38,418 vs 37,222.
+- **Open questions / follow-ups:** rallies still time out often; tighter calling (at most one extra ally, ~15-round limit) or sharing rough positions in the remaining shared-memory bytes might make them work on more maps.
+
+---
+
+## 31. Shared team target: opening as a team, support pairs (`common/team.rs`, off)
+**Commit:** Uncommitted
+
+- **What changed:** a farm target shared through the team's shared memory (bytes 2-4: group + 1, round written, leader's champion type + 1). Until `OPENING_GROUP_ROUNDS` the first champion to plan each round leads and the rest follow its group (rewards in sight, a capture in progress and elk rallies first); after that only a damage dealer leads and only tanks and healers follow it (`SUPPORT_PAIRS`). A leader that stops writing loses the lead after a round.
+- **Why:** champions choosing targets on their own walked to the same groups and turned back (895 trips in 24 traced games), and none could take wolves or elk alone early.
+- **Results** vs entry 30 (with ranged spacing), 174 games each: opening to round 100 + pairs **77/174**; opening to round 200 + pairs **88/174**; pairs only **73/174**. None helps; pairs only looks harmful (like the escort-follow tests, entry 24). **`TEAM_TARGET` is off.**
+- **Open questions / follow-ups:** in the opening, most champions still took the reward in sight or held a capture rather than following, so the team stays together anyway around the group it just cleared; the gain from forcing it is small.
+
+---
+
+## 32. Removed: features that were off and tested as not helping
+**Commit:** Uncommitted
+
+Each was off by default and lost (or did nothing) when tested; the code is gone rather than switched off:
+- **Hot spots** (`hotspots.rs`, entry 21): every variant lost. The region table now starts at offset 0 of the draft memory.
+- **Greedy collecting** (`GREEDY`, `GREEDY_CAMPS`, `GREEDY_BEFORE_CHASE`, `safe_group`, the fight code's `collect_instead`, entries 24 and 28): even on wins, and the main cause of back-and-forth. Its radius lives on as `DAMAGED_CAMP_RADIUS` (8) for finishing off damaged camps. With it went two things only greedy turned on: staying to capture a nearby reward at low health (`nearby_capture_reward`) and `imminent_danger`.
+- **Escort recall and follow** (`ESCORT_RECALL`, `ESCORT_FOLLOW`, entry 24): 35/84 and 34/84. Escorts still only chase near a damage dealer.
+- **Go home only with an enemy in sight** (`GO_HOME_NEEDS_ENEMY`, entry 24): more deaths.
+- **Always chase-dash** (`DASH_CHASE_ALWAYS`, entry 17): no different from the default.
+- **Per-camp phase filter** (`FARM_PHASE_BY_GROUP = false`): replaced by the per-group filter (entry 24).
+- **Shared team target and support pairs** (`team.rs`, entry 31).
+
+677 fewer lines. Check: the same 8 maps vs x-base before and after had the same winners (results differ slightly from fuel drift); cleaned vs before, all maps, both sides, seed 7: 30/58.
+
+---
+
+## 33. Monolith rallies, and realistic rally stand-ins
+**Commit:** Uncommitted
+
+- **Monolith rallies** (`MONOLITH_RALLY`, `rally.rs`): a monolith has 20,000 health and hits for 200, but drops 300 gold and 200 gems (a fifth of the target). From round 250 (`MONOLITH_RALLY_FROM_ROUND`), on any map with one, a monolith group gets a rally once we plus up to 4 allies (`MONOLITH_MAX_HELPERS`) would win; the check uses our current items, so it passes as the team grows. Elk rallies are unchanged (elk-heavy maps only). Maps with a reachable monolith: contest, monolith, rows, scatter. On **contest** the monoliths are the only gem source: before this every game ended 0–0 (decided for team B).
+- **Bug fixed in rally checks** (`collect::winnable_with_standins`): the stand-in allies were copies of the caller added on top of the allies already there, so a tank caller planned with extra tanks and one call planned a five-champion team as eight. Now each champion remembers the teammates it has seen (attack range, damage, max health); a rally counts only teammates not in sight, strongest first, copies of us only for teammates never seen, and never more than the team has. Contest went from 54 monolith calls and no kills to 13 calls and a kill (200 gems, a win); elk rallies on elkring completed 40 of 46 (most timed out before).
+- **Results** vs entry 32, 174 games: **85/174** (even). Monolith maps 15/24 on seeds 1–3, 22/48 on seeds 4–9 (37/72 together, even); elk-rally maps 24/48. On contest a monolith kill wins the game (5 of 12 games on seeds 4–9, all won); with no kill it's 0–0.
+- **Open questions / follow-ups:** monolith fights still often fail or never start; the fight simulation ignores healing (Willow), and squishy carries hit their 35% retreat floor early against 200 a round.
 
 ---
 

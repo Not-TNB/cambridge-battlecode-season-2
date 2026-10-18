@@ -65,9 +65,14 @@ From `checkpoint()` profiling in `my-bot` (writeup entry 24):
 | `vision::camps()` | ~2k |
 | Formatting one float (`{:.0}`) | ~9k: print integers in debug output |
 | Plain Rust: 1,000 `Vec` pushes | ~35k: fuel is roughly wasm instructions, so loops over every camp of every group several times a turn add up |
+| `farm_plan` (writeup entry 27) | ~32k a turn before caching; ~12k of it the camp-fight verdicts |
+| A full-map `DistanceField::compute` | ~1.5k (30×30) to ~15k (100×100); exporting it to Rust costs about as much again |
 
 - **Cache per turn:** results that only change when we move or act (visible units, blocked tiles, threats) can be cached per round and position. Drop the cache after an attack, cast, dash or ward placement, any of which can change what we see.
 - **Don't build `Champion`s from `cambc::champions()` to reuse:** a champion built while hidden keeps "not in vision" errors in its ability slots.
+- **Don't compute what the turn may not use:** the fight code built the farm plan to check one flag on 84% of turns, and half of those plans were never used. Check the cheap conditions first.
+- **Reuse across turns, not just within one:** values that only change slowly (camp stats, damage estimates from abilities) or whose inputs haven't changed (a camp-fight verdict, a farm plan while standing still) can be kept between turns behind a small key.
+- **Small per-turn costs lose games when fuel is tight:** with 27% of turns running out of fuel, adding 2–4k a turn (walking-distance lookups, entry 27) lost ~12 of 174 games on its own.
 - **A debug print that runs out of fuel** suspends the champion into its next turn. Traced games are slower than real ones, so don't use them for win rates.
 
 ## Checking for timeouts

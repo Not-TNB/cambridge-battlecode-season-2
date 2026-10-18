@@ -120,13 +120,24 @@ pub fn play() -> Result<()> {
     }
 
     let choice = filtered_champs[crate::random_number(filtered_champs.len() as u32) as usize];
-    // Hot-spot plan for our picks including this one. It must be submitted before picking (the
-    // pick ends our draft turn: submitting after it is engine error 18), and a failure here must
-    // not cost us the pick.
-    let mut picks = ally_draft;
-    picks.push(choice);
-    if let Err(error) = crate::hotspots::submit_plan(&picks) {
-        println!("hotspot plan failed: {error}");
+    // Draft memory. It must be submitted before picking (the pick ends our draft turn:
+    // submitting after it is engine error 18), and a failure here must not cost us the pick.
+    if let Err(error) = submit_memory() {
+        println!("draft memory failed: {error}");
     }
     cambc::draft::pick(choice)
+}
+
+// Fuel to keep for the pick itself; below this the memory isn't submitted (missing a pick means
+// the game picks for us at random).
+const MEMORY_MIN_FUEL: u64 = 20_000;
+
+// The region table (regions.rs). Submitting replaces the whole memory, so it's written every time;
+// the table stops searching when fuel runs low, so the pick is still made.
+fn submit_memory() -> Result<()> {
+    let bytes = crate::regions::table_bytes()?;
+    if bytes.is_empty() || cambc::fuel_remaining()? < MEMORY_MIN_FUEL {
+        return Ok(());
+    }
+    cambc::draft_memory().submit(&bytes)
 }
