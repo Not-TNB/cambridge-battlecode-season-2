@@ -23,7 +23,7 @@ pub const ELK_RALLY: bool = true;
 // corners 5/6: 45-100% of groups) and lost where other camps are plentiful and close (collision
 // 0/6, spokes, hedgerows, fragment 1/6: 10-33%): waiting for allies there wastes cheap farming.
 pub const ELK_RALLY_MIN_SHARE: f32 = 0.45;
-const RALLY_ROUNDS: u32 = 40;
+const RALLY_ROUNDS: u32 = 20;
 // Most extra allies an elk rally may count on: we call one only if us plus this many would win.
 pub const RALLY_MAX_HELPERS: usize = 3;
 // Monolith rallies, on any map with one, from this round, counting on up to this many allies.
