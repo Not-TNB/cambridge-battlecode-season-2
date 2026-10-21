@@ -10,8 +10,30 @@ use cambc::{Bitboard, Camp, Champion, Result, Vec2};
 // are skipped.
 pub const CAMP_FIGHT: bool = true;
 pub const CAMP_FIGHT_HP_FLOOR: f32 = 0.35;
+// The fight is fought down to this many hits of the group's hardest-hitting camp, when that's
+// below CAMP_FIGHT_HP_FLOOR (the low-health recall waits as long, safety::low_hp_recall).
+pub const CAMP_FIGHT_HITS: f32 = 3.0;
 // Assume visible allies within this distance can join a camp fight, even before they are in attack range.
 pub const CAMP_ALLY_SUPPORT_RADIUS: i32 = 7;
+// Allies further away join once they could have walked into support range (a step a round), if
+// that's within ALLY_JOIN_TURNS: counting only the allies already in range made the first champion
+// to reach an elk judge it lost while the rest of the team was 8-9 tiles behind (bot-v2: 66/126
+// against 53/126 without it, the biggest gain of its camp-fight changes).
+pub const ALLY_JOIN_TURNS: i32 = 6;
+// The camp-fight check in closed form instead of simulated. Focusing the weakest camp first with a
+// team damage rate D, camp i (in that order) is alive until C_i / D, C_i being the health of camps
+// 1..=i, so the team takes K / D damage in all, with K = sum of strength_i * C_i. The fight is won
+// if that fits in the health the fighters can spend before their retreat floors: D * spare >= K.
+// Allies still walking over count for the share of the fight they'd be there for. It's the even
+// damage split the simulation assumed, without simulating it (in bot-v2 the simulation was the
+// biggest cost in turns that ran out of fuel; the two agreed on 90% of checks). Off: simulate.
+pub const CAMP_FIGHT_CLOSED_FORM: bool = true;
+// A group whose visible members are dead but which isn't cleared has the rest alive out of sight:
+// farm_plan then sends us to its unseen tiles rather than its dead ones. Off: dead tiles too.
+pub const PARTIAL_GROUPS: bool = true;
+
+// An ally that can join a camp fight: position, attack range, damage, hp, retreat floor.
+type Helper = (Vec2, i32, f32, f32, f32);
 
 // What every camp-fight check in a turn shares, built once per round and position: looking things
 // up per group (~20 groups) cost ~60k fuel.
@@ -20,8 +42,9 @@ struct FightContext {
     here: Vec2,
     live: Vec<(usize, Camp)>, // visible live camps, by group index
     sight: std::rc::Rc<crate::common::Sight>,
-    outgoing: f32,                            // our damage per turn against camps
-    helpers: Vec<(Vec2, i32, f32, f32, f32)>, // position, attack range, damage, hp, retreat floor
+    outgoing: f32, // our damage per turn against camps
+    range: i32,    // our attack range
+    helpers: Vec<Helper>,
     hp: f32,
     floor: f32,
     verdicts: Vec<Option<Option<bool>>>, // per group, once judged this turn
@@ -40,30 +63,62 @@ fn fight_context() -> Result<FightContext> {
             live.push((index, camp.clone()));
         }
     }
-    let outgoing = expected_camp_damage(&me)?;
+    let round = cambc::round_number()?;
+    let outgoing = cached_camp_damage(me, round)?;
     let mut helpers = Vec::new();
     for ally in &sight.allies {
         if ally.is_alive()? {
             helpers.push((
                 ally.position()?,
                 ally.attack_range()?,
-                expected_camp_damage(ally)?,
+                cached_camp_damage(ally, round)?,
                 ally.health()?,
                 CAMP_FIGHT_HP_FLOOR * ally.max_health()?,
             ));
         }
     }
     Ok(FightContext {
-        round: cambc::round_number()?,
+        round,
         here: me.position()?,
         live,
         sight: sight.clone(),
         outgoing,
+        range: me.attack_range()?,
         helpers,
         hp: me.health()?,
         floor: CAMP_FIGHT_HP_FLOOR * me.max_health()?,
         verdicts: vec![None; camp_groups()?.len()],
     })
+}
+
+// expected_camp_damage reads every ability through the host (~1k fuel a champion, for us and each
+// ally in sight, on every turn with a camp in sight). It changes only when items do, so it's kept
+// per champion for this many rounds.
+const DAMAGE_ESTIMATE_ROUNDS: u32 = 10;
+
+thread_local! {
+    static DAMAGE_ESTIMATES: std::cell::RefCell<Vec<(cambc::ChampionType, u32, f32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn cached_camp_damage(champion: &Champion, round: u32) -> Result<f32> {
+    let name = champion.champion_name()?;
+    let cached = DAMAGE_ESTIMATES.with(|d| {
+        d.borrow()
+            .iter()
+            .find(|&&(n, at, _)| n == name && round < at + DAMAGE_ESTIMATE_ROUNDS)
+            .map(|&(_, _, damage)| damage)
+    });
+    if let Some(damage) = cached {
+        return Ok(damage);
+    }
+    let damage = expected_camp_damage(champion)?;
+    DAMAGE_ESTIMATES.with(|d| {
+        let mut d = d.borrow_mut();
+        d.retain(|&(n, _, _)| n != name);
+        d.push((name, round, damage));
+    });
+    Ok(damage)
 }
 
 fn expected_camp_damage(champion: &Champion) -> Result<f32> {
@@ -112,6 +167,16 @@ pub fn camp_fight_winnable(index: usize) -> Result<Option<bool>> {
 }
 
 fn judge(ctx: &FightContext, index: usize) -> Result<Option<bool>> {
+    let camps = group_camps(ctx, index)?;
+    if camps.iter().all(|&(_, _, s, _)| s <= 0.0) {
+        return Ok(Some(true));
+    } // clusters don't hit back
+    Ok(Some(fight_winnable(ctx, camps, &ctx.helpers)?))
+}
+
+// Group `index`'s camps as the fight sees them: (position, health, strength, attack range). Members
+// not in sight count as alive at full health, like the visible camp of the same kind.
+fn group_camps(ctx: &FightContext, index: usize) -> Result<Vec<(Vec2, f32, f32, i32)>> {
     let group = &camp_groups()?[index];
     let live: Vec<&Camp> = ctx
         .live
@@ -119,8 +184,7 @@ fn judge(ctx: &FightContext, index: usize) -> Result<Option<bool>> {
         .filter(|(g, _)| *g == index)
         .map(|(_, c)| c)
         .collect();
-    // Members not in sight: assume alive at base health, like the visible camp of the same kind.
-    let mut camps = Vec::new(); // (position, health, strength, attack range)
+    let mut camps = Vec::new();
     for member in group.camps() {
         if let Some(c) = live
             .iter()
@@ -152,23 +216,136 @@ fn judge(ctx: &FightContext, index: usize) -> Result<Option<bool>> {
             });
         }
     }
-    if camps.iter().all(|&(_, _, s, _)| s <= 0.0) {
-        return Ok(Some(true));
-    } // clusters don't hit back
+    Ok(camps)
+}
+
+fn fight_winnable(
+    ctx: &FightContext,
+    camps: Vec<(Vec2, f32, f32, i32)>,
+    helpers: &[Helper],
+) -> Result<bool> {
+    if CAMP_FIGHT_CLOSED_FORM {
+        Ok(closed_form(ctx, &camps, helpers))
+    } else {
+        Ok(simulate(ctx, camps, helpers))
+    }
+}
+
+// When each helper would be in the fight: rounds from now (0: already in support range), or None
+// if it's more than ALLY_JOIN_TURNS away.
+fn join_times(camps: &[(Vec2, f32, f32, i32)], helpers: &[Helper]) -> Vec<Option<f32>> {
+    helpers
+        .iter()
+        .map(|&(position, range, ..)| {
+            let gap = camps
+                .iter()
+                .filter(|camp| camp.1 > 0.0)
+                .map(|camp| distance(camp.0, position))
+                .min()
+                .unwrap_or(0)
+                - range.max(CAMP_ALLY_SUPPORT_RADIUS);
+            if gap <= 0 {
+                Some(0.0)
+            } else if gap <= ALLY_JOIN_TURNS {
+                Some(gap as f32)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+// A combatant's retreat floor: CAMP_FIGHT_HP_FLOOR of its health, or CAMP_FIGHT_HITS hits of the
+// hardest-hitting camp if that's lower.
+fn floor_against(floor: f32, hardest_hit: f32) -> f32 {
+    if CAMP_FIGHT_HITS > 0.0 && hardest_hit > 0.0 {
+        floor.min(CAMP_FIGHT_HITS * hardest_hit)
+    } else {
+        floor
+    }
+}
+
+fn closed_form(ctx: &FightContext, camps: &[(Vec2, f32, f32, i32)], helpers: &[Helper]) -> bool {
+    let mut live: Vec<(Vec2, f32, f32, i32)> =
+        camps.iter().copied().filter(|c| c.1 > 0.0).collect();
+    if live.is_empty() {
+        return true;
+    }
+    live.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let hardest_hit = live.iter().map(|c| c.2).fold(0.0f32, f32::max);
+    let joins = join_times(&live, helpers);
+    let total: f32 = live.iter().map(|c| c.1).sum();
+    let full: f32 = ctx.outgoing
+        + helpers
+            .iter()
+            .zip(&joins)
+            .filter(|(h, j)| j.is_some() && h.3 > h.4)
+            .map(|(h, _)| h.2)
+            .sum::<f32>();
+    if full <= 0.0 {
+        return false;
+    }
+    // A helper arriving after `join` of the fight's T rounds adds (1 - join / T) of its damage and
+    // of its spare health.
+    let rounds = total / full;
+    let share = |join: f32| (1.0 - join / rounds.max(1.0)).clamp(0.0, 1.0);
+    let mut damage = ctx.outgoing;
+    let mut spare = (ctx.hp - floor_against(ctx.floor, hardest_hit)).max(0.0);
+    let mut any_helper = false;
+    for (h, join) in helpers.iter().zip(&joins) {
+        if let Some(join) = join {
+            if h.3 > h.4 {
+                let s = share(*join);
+                damage += h.2 * s;
+                spare += (h.3 - floor_against(h.4, hardest_hit)).max(0.0) * s;
+                any_helper |= s > 0.0;
+            }
+        }
+    }
+    if damage <= 0.0 {
+        return false;
+    }
+    // K: only camps that hit someone count (a camp that can't reach us hits a helper, if any).
+    let mut k = 0.0;
+    let mut cumulative = 0.0;
+    for &(position, health, strength, range) in &live {
+        cumulative += health;
+        let hits_us = range >= ctx.range || distance(position, ctx.here) <= range;
+        if hits_us || any_helper {
+            k += strength * cumulative;
+        }
+    }
+    k <= damage * spare
+}
+
+// The camp fight turn by turn (CAMP_FIGHT_CLOSED_FORM off): each iteration advances to the next
+// camp death, champion retreat threshold or ally arrival. Allies that retreat stop contributing.
+fn simulate(ctx: &FightContext, mut camps: Vec<(Vec2, f32, f32, i32)>, helpers: &[Helper]) -> bool {
     camps.sort_by(|a, b| a.1.total_cmp(&b.1));
     let mut damage_rates = vec![0.0; camps.len()];
-    let helpers = ctx.helpers.clone();
-    let mut combatants = Vec::with_capacity(ctx.helpers.len() + 1);
-    combatants.push((ctx.hp, ctx.floor));
-    combatants.extend(helpers.iter().map(|helper| (helper.3, helper.4)));
+    let hardest_hit = camps.iter().map(|camp| camp.2).fold(0.0f32, f32::max);
+    let mut combatants = Vec::with_capacity(helpers.len() + 1);
+    combatants.push((ctx.hp, floor_against(ctx.floor, hardest_hit)));
+    combatants.extend(
+        helpers
+            .iter()
+            .map(|helper| (helper.3, floor_against(helper.4, hardest_hit))),
+    );
     let mut active: Vec<bool> = combatants.iter().map(|&(hp, floor)| hp > floor).collect();
+    // When each combatant is in the fight (we are from the start).
+    let mut join_at = vec![0.0f32; combatants.len()];
+    for (i, join) in join_times(&camps, helpers).into_iter().enumerate() {
+        join_at[i + 1] = join.unwrap_or(f32::INFINITY);
+    }
+    let mut now = 0.0f32;
     let mut winnable = camps.iter().all(|&(_, health, _, _)| health <= 0.0);
 
-    // Each iteration advances to the next camp death or champion retreat threshold, rather than
-    // simulating every round. Allies that retreat stop contributing damage.
     while !winnable {
+        let joined: Vec<bool> = (0..combatants.len())
+            .map(|i| active[i] && join_at[i] <= now + 0.001)
+            .collect();
         damage_rates.fill(0.0);
-        if active[0] && ctx.outgoing > 0.0 {
+        if joined[0] && ctx.outgoing > 0.0 {
             if let Some((index, _)) = camps
                 .iter()
                 .enumerate()
@@ -179,25 +356,26 @@ fn judge(ctx: &FightContext, index: usize) -> Result<Option<bool>> {
             }
         }
 
-        for (helper_index, &(position, range, damage, _, _)) in helpers.iter().enumerate() {
-            if !active[helper_index + 1] {
+        // A helper that walked in counts as in support range of every camp of the group.
+        let in_support = |helper_index: usize, camp: Vec2| {
+            let (position, range, ..) = helpers[helper_index];
+            join_at[helper_index + 1] > 0.0
+                || distance(camp, position) <= range.max(CAMP_ALLY_SUPPORT_RADIUS)
+        };
+        for (helper_index, &(_, _, damage, _, _)) in helpers.iter().enumerate() {
+            if !joined[helper_index + 1] {
                 continue;
             }
             let targets = camps
                 .iter()
-                .enumerate()
-                .filter(|(_, camp)| {
-                    camp.1 > 0.0
-                        && distance(camp.0, position) <= range.max(CAMP_ALLY_SUPPORT_RADIUS)
-                })
+                .filter(|camp| camp.1 > 0.0 && in_support(helper_index, camp.0))
                 .count();
             if targets == 0 {
                 continue;
             }
             let per_target = damage / targets as f32;
             for (i, camp) in camps.iter().enumerate() {
-                if camp.1 > 0.0 && distance(camp.0, position) <= range.max(CAMP_ALLY_SUPPORT_RADIUS)
-                {
+                if camp.1 > 0.0 && in_support(helper_index, camp.0) {
                     damage_rates[i] += per_target;
                 }
             }
@@ -211,17 +389,18 @@ fn judge(ctx: &FightContext, index: usize) -> Result<Option<bool>> {
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let mut incoming = vec![0.0; combatants.len()];
         for &(position, health, strength, range) in &camps {
-            if health <= 0.0 || distance(position, ctx.here) > range {
+            // To fight it we stand within our attack range of the group, so a camp whose range is
+            // at least ours hits us wherever we stand now.
+            if health <= 0.0 || (range < ctx.range && distance(position, ctx.here) > range) {
                 continue;
             }
-            let targets: Vec<usize> = std::iter::once(0)
-                .chain(helpers.iter().enumerate().filter_map(|(i, helper)| {
-                    (active[i + 1]
-                        && distance(position, helper.0) <= range.max(CAMP_ALLY_SUPPORT_RADIUS))
-                    .then_some(i + 1)
-                }))
-                .filter(|&i| active[i])
-                .collect();
+            let targets: Vec<usize> =
+                std::iter::once(0)
+                    .chain((0..helpers.len()).filter_map(|i| {
+                        (joined[i + 1] && in_support(i, position)).then_some(i + 1)
+                    }))
+                    .filter(|&i| joined[i])
+                    .collect();
             if !targets.is_empty() {
                 let damage = strength / targets.len() as f32;
                 for target in targets {
@@ -232,40 +411,40 @@ fn judge(ctx: &FightContext, index: usize) -> Result<Option<bool>> {
         let next_retreat = combatants
             .iter()
             .enumerate()
-            .filter(|(i, _)| active[*i] && incoming[*i] > 0.0)
+            .filter(|(i, _)| joined[*i] && incoming[*i] > 0.0)
             .map(|(i, &(hp, floor))| (i, (hp - floor) / incoming[i]))
             .min_by(|a, b| a.1.total_cmp(&b.1));
-        let Some((next_death_index, next_death)) = next_death else {
-            break;
-        };
+        let next_join = (0..combatants.len())
+            .filter(|&i| active[i] && join_at[i] > now + 0.001 && join_at[i].is_finite())
+            .map(|i| join_at[i] - now)
+            .min_by(|a, b| a.total_cmp(b));
         let time_to_retreat = next_retreat.map_or(f32::INFINITY, |(_, time)| time);
-        if time_to_retreat < next_death {
-            for (i, camp) in camps.iter_mut().enumerate() {
-                if camp.1 > 0.0 {
-                    camp.1 -= damage_rates[i] * time_to_retreat;
-                }
-            }
-            for (i, combatant) in combatants.iter_mut().enumerate() {
-                combatant.0 -= incoming[i] * time_to_retreat;
-                if active[i] && combatant.0 <= combatant.1 + 0.001 {
-                    active[i] = false;
-                }
-            }
-            continue;
+        let time_to_death = next_death.map_or(f32::INFINITY, |(_, time)| time);
+        let time_to_join = next_join.unwrap_or(f32::INFINITY);
+        let step = time_to_retreat.min(time_to_death).min(time_to_join);
+        if !step.is_finite() {
+            break; // nobody can hurt the camps and nobody else is coming
         }
-
         for (i, camp) in camps.iter_mut().enumerate() {
             if camp.1 > 0.0 {
-                camp.1 -= damage_rates[i] * next_death;
+                camp.1 -= damage_rates[i] * step;
             }
         }
-        camps[next_death_index].1 = 0.0;
         for (i, combatant) in combatants.iter_mut().enumerate() {
-            combatant.0 -= incoming[i] * next_death;
+            combatant.0 -= incoming[i] * step;
+            if active[i] && joined[i] && combatant.0 <= combatant.1 + 0.001 {
+                active[i] = false;
+            }
         }
+        if let Some((index, time)) = next_death {
+            if time <= step {
+                camps[index].1 = 0.0;
+            }
+        }
+        now += step;
         winnable = camps.iter().all(|&(_, health, _, _)| health <= 0.0);
     }
-    Ok(Some(winnable))
+    winnable
 }
 
 // Whether group `index` is safe to take: only clusters (they don't hit back), or a camp fight we'd

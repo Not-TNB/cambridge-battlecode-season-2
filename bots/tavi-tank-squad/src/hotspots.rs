@@ -42,11 +42,13 @@ fn rewards(kind: cambc::CampType) -> (u32, u32) {
         C::GemCluster => (0, 24),
         C::GoldCluster => (35, 0),
         C::Monolith => (300, 200),
+        C::Golem => (160, 36), // new in 3.0
     }
 }
 
 fn is_follower(pick: ChampionDraft) -> bool {
-    matches!(draft_class(pick), ClassKind::Tank | ClassKind::Healer) || pick == ChampionDraft::Varg
+    matches!(draft_class(pick), ClassKind::Tank | ClassKind::Healer)
+        || pick == ChampionDraft::HeartOfRuin
 }
 
 // Squishy carries first: they get the closest spots and the followers.

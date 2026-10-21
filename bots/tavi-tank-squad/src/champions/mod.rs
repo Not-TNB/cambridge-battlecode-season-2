@@ -3,6 +3,7 @@
 use cambc::{ChampionType, ItemType, Result};
 
 mod cassi;
+mod heart_of_ruin;
 mod issac;
 mod marcella;
 mod prism;
@@ -76,6 +77,7 @@ pub fn for_champion(champion: ChampionType) -> Box<dyn ChampionAi> {
         ChampionType::Stellar => Box::new(stellar::Stellar::default()),
         ChampionType::Tavi => Box::new(tavi::Tavi::default()),
         ChampionType::Varg => Box::new(varg::Varg::default()),
+        ChampionType::HeartOfRuin => Box::new(heart_of_ruin::HeartOfRuin::default()),
         ChampionType::Vendetta => Box::new(vendetta::Vendetta::default()),
         ChampionType::VesperVale => Box::new(vesper_vale::VesperVale::default()),
         ChampionType::Willow => Box::new(willow::Willow::default()),

@@ -1,0 +1,155 @@
+// Walking distances over fixed terrain (walls, holes, altars, the enemy spawn; units ignored).
+// Straight-line distance misleads where a line of holes or walls splits the map: on spine an elk
+// 3 tiles away across the hole line is ~47 steps round its end, and 42% of new farm targets were
+// such camps (walked to, then often given up on).
+use super::world::{distance, terrain_tiles};
+use cambc::{Bitboard, DistanceField, Result, Vec2};
+use std::cell::OnceCell;
+
+// Off: farm targets are ranked by straight-line distance again.
+pub const WALK_TARGETS: bool = true;
+// The field from us stops here (a capped field is cheaper: ~4-6k fuel against 5-11k); tiles
+// further away rank after every tile within it, by straight-line distance.
+const FIELD_STEPS: u16 = 60;
+
+// Steps from `origin` to any tile, the field built on the first lookup (~4-6k fuel; each lookup is
+// a host call, ~40). Any failure falls back to straight-line distance.
+pub struct StepsFrom {
+    origin: Vec2,
+    field: OnceCell<Option<DistanceField>>,
+    // How far the field searches, set by the first nearest_with before it's built (FIELD_STEPS
+    // otherwise). Tiles beyond it rank by straight-line distance after every tile within it.
+    cap: std::cell::Cell<u16>,
+}
+
+// The field only needs to reach the nearest candidate (in a straight line) plus this many steps of
+// detour and penalty: it costs by the area it covers, ~14k at 60 steps on a 100x100 map (01big-world)
+// against ~7k at 20. 0: always FIELD_STEPS.
+pub const NEAREST_FIELD_SLACK: i32 = 20;
+
+impl StepsFrom {
+    pub fn new(origin: Vec2) -> Self {
+        Self {
+            origin,
+            field: OnceCell::new(),
+            cap: std::cell::Cell::new(FIELD_STEPS),
+        }
+    }
+
+    // The nearest of `tiles` on foot. One tile needs no field. Steps are never fewer than the
+    // straight-line distance, so tiles are tried nearest in a straight line first and the search
+    // stops once none left could beat the best (a lookup is a host call; goals can be 100 tiles).
+    pub fn nearest(&self, tiles: &[Vec2]) -> Option<Vec2> {
+        self.nearest_with(tiles, |_| 0)
+    }
+
+    // Like nearest, with `extra` steps added per tile (a penalty). One pass for the straight-line
+    // lower bounds (steps are never fewer), then only tiles whose bound beats the best found so far
+    // are looked up: sorting all of them cost up to ~50k with a few hundred camp tiles as goals.
+    pub fn nearest_with(&self, tiles: &[Vec2], extra: impl Fn(Vec2) -> i32) -> Option<Vec2> {
+        if tiles.len() <= 1 {
+            return tiles.first().copied();
+        }
+        let mut bounds = Vec::with_capacity(tiles.len());
+        let mut first = 0;
+        for (i, &tile) in tiles.iter().enumerate() {
+            let bound = distance(self.origin, tile) + extra(tile);
+            if bound < bounds.get(first).copied().unwrap_or(i32::MAX) {
+                first = i;
+            }
+            bounds.push(bound);
+        }
+        if NEAREST_FIELD_SLACK > 0 && self.field.get().is_none() {
+            let reach = (bounds[first] + NEAREST_FIELD_SLACK).clamp(1, FIELD_STEPS as i32);
+            self.cap.set(reach as u16);
+        }
+        let mut best = (self.steps(tiles[first]) + extra(tiles[first]), first);
+        for (i, &bound) in bounds.iter().enumerate() {
+            if i != first && bound < best.0 {
+                let steps = self.steps(tiles[i]) + extra(tiles[i]);
+                if steps < best.0 {
+                    best = (steps, i);
+                }
+            }
+        }
+        Some(tiles[best.1])
+    }
+
+    pub fn steps(&self, tile: Vec2) -> i32 {
+        let straight = distance(self.origin, tile);
+        if !WALK_TARGETS {
+            return straight;
+        }
+        let field = self.field.get_or_init(|| build(self.origin, self.cap.get()).ok());
+        match field.as_ref().map(|f| f.get(tile)) {
+            Some(Ok(d)) if d != DistanceField::UNREACHABLE => d as i32,
+            Some(Ok(_)) => self.cap.get() as i32 + straight,
+            _ => straight,
+        }
+    }
+}
+
+fn build(origin: Vec2, cap: u16) -> Result<DistanceField> {
+    let mut source = Bitboard::new()?;
+    source.set(origin, true)?;
+    let mut field = DistanceField::new()?;
+    field.compute(terrain_tiles()?, &source, &mut Bitboard::new()?, cap)?;
+    Ok(field)
+}
+
+thread_local! {
+    static ALTARS: OnceCell<Option<(Vec<u16>, i32)>> = const { OnceCell::new() };
+}
+
+thread_local! {
+    static SPAWN: OnceCell<Option<(Vec<u16>, i32)>> = const { OnceCell::new() };
+}
+
+// Work out altar_steps and spawn_steps once per champion: one field from every altar and one from
+// our spawn, copied into Rust memory (~10-30k fuel each, so done at the end of a turn with fuel to
+// spare, bot.rs; one per turn).
+pub fn prepare_walk_fields() {
+    if ALTARS.with(|a| a.get().is_none()) {
+        ALTARS.with(|a| {
+            a.get_or_init(|| altar_field().ok());
+        });
+        return;
+    }
+    SPAWN.with(|s| {
+        s.get_or_init(|| spawn_field().ok());
+    });
+}
+
+// Steps from `tile` to our spawn region. None until prepare_walk_fields has run, or if it failed.
+pub fn spawn_steps(tile: Vec2) -> Option<i32> {
+    SPAWN.with(|s| {
+        let (steps, width) = s.get()?.as_ref()?;
+        let d = *steps.get((tile.y * width + tile.x) as usize)?;
+        (d != DistanceField::UNREACHABLE).then_some(d as i32)
+    })
+}
+
+fn spawn_field() -> Result<(Vec<u16>, i32)> {
+    let spawn = cambc::map::spawn_region(cambc::Team::Ally)?;
+    let mut field = DistanceField::new()?;
+    field.compute(terrain_tiles()?, spawn, &mut Bitboard::new()?, DistanceField::UNREACHABLE)?;
+    Ok((field.export_linear_buffer()?, field.width()))
+}
+
+// Steps from `tile` to the nearest altar (the altar itself is the source; tribute range is 1).
+// None until prepare_altar_steps has run, or if it failed.
+pub fn altar_steps(tile: Vec2) -> Option<i32> {
+    ALTARS.with(|a| {
+        let (steps, width) = a.get()?.as_ref()?;
+        let d = *steps.get((tile.y * width + tile.x) as usize)?;
+        (d != DistanceField::UNREACHABLE).then_some(d as i32)
+    })
+}
+
+fn altar_field() -> Result<(Vec<u16>, i32)> {
+    let altars = cambc::map::altars()?;
+    let blocked = terrain_tiles()?.intersect(&altars.complement()?)?;
+    let mut field = DistanceField::new()?;
+    field.compute(&blocked, altars, &mut Bitboard::new()?, DistanceField::UNREACHABLE)?;
+    Ok((field.export_linear_buffer()?, field.width()))
+}

@@ -40,7 +40,7 @@ pub fn draft_class(champion: ChampionDraft) -> ClassKind {
         D::CassiAndIssac | D::Tavi => ClassKind::AssassinAndDpsAp,
         D::Stellar | D::Prism => ClassKind::DpsAp,
         D::Willow => ClassKind::Healer,
-        D::Ren | D::Varg => ClassKind::Bruiser,
+        D::Ren | D::Varg | D::HeartOfRuin => ClassKind::Bruiser,
     }
 }
 
@@ -63,6 +63,7 @@ pub fn draft_of(champion: ChampionType) -> ChampionDraft {
         C::Willow => ChampionDraft::Willow,
         C::Ren => ChampionDraft::Ren,
         C::Varg => ChampionDraft::Varg,
+        C::HeartOfRuin => ChampionDraft::HeartOfRuin,
         C::Tavi => ChampionDraft::Tavi,
     }
 }

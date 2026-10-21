@@ -8,6 +8,7 @@ mod draft;
 mod hotspots;
 mod safety;
 mod squad;
+mod v2;
 use std::cell::Cell;
 
 thread_local! {

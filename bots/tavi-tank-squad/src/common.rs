@@ -188,14 +188,55 @@ pub fn group_at(tile: Vec2) -> Result<Option<usize>> {
 // once) plus visible occupants. Each new Bitboard costs ~2k fuel and this was rebuilt from seven
 // several times a turn, so it's cached per round and position and dropped with forget_sight (and
 // after a dash attempt, which can reveal a hidden unit).
+// Tiles a step or dash onto failed because an unseen unit stands there (in a bush), each with the
+// round to stop avoiding it. The engine reveals such a unit only for the rest of the round, so the
+// next turn's path picked the same step and failed again, turn after turn for as long as the unit
+// stayed (broken-curve: the Tavi squad's leader stood still from round 596 to the end of the game).
+// 0: not remembered.
+pub const HIDDEN_BLOCK_ROUNDS: u32 = 10;
+
+thread_local! {
+    static HIDDEN_BLOCKS: std::cell::RefCell<Vec<(Vec2, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+// Remember that an unseen unit blocks `tile` (see HIDDEN_BLOCK_ROUNDS).
+pub fn remember_hidden_block(tile: Vec2) {
+    if HIDDEN_BLOCK_ROUNDS == 0 {
+        return;
+    }
+    let round = cambc::round_number().unwrap_or(0);
+    HIDDEN_BLOCKS.with(|h| {
+        let mut h = h.borrow_mut();
+        h.retain(|&(t, until)| t != tile && round < until);
+        h.push((tile, round + HIDDEN_BLOCK_ROUNDS));
+    });
+    forget_blocked();
+}
+
 thread_local! {
     static BLOCKED: std::cell::RefCell<Option<(u32, Vec2, Bitboard)>> = const { std::cell::RefCell::new(None) };
 }
 
-pub fn blocked_tiles() -> Result<Bitboard> {
+// The fixed part: walls, holes, altars and the enemy spawn, combined once per champion.
+pub fn terrain_tiles() -> Result<&'static Bitboard> {
     thread_local! {
         static TERRAIN: OnceCell<&'static Bitboard> = const { OnceCell::new() };
     }
+    if let Some(terrain) = TERRAIN.with(|c| c.get().copied()) {
+        return Ok(terrain);
+    }
+    let mut terrain = cambc::map::walls()?.clone();
+    terrain.union_assign(cambc::map::holes()?)?;
+    terrain.union_assign(cambc::map::altars()?)?;
+    terrain.union_assign(cambc::map::spawn_region(Team::Enemy)?)?;
+    let terrain: &'static Bitboard = Box::leak(Box::new(terrain));
+    TERRAIN.with(|c| {
+        let _ = c.set(terrain);
+    });
+    Ok(terrain)
+}
+
+pub fn blocked_tiles() -> Result<Bitboard> {
     let key = (cambc::round_number()?, me()?.position()?);
     if let Some(blocked) = BLOCKED.with(|c| {
         c.borrow()
@@ -205,23 +246,18 @@ pub fn blocked_tiles() -> Result<Bitboard> {
     }) {
         return Ok(blocked);
     }
-    if TERRAIN.with(|c| c.get().is_none()) {
-        let mut terrain = cambc::map::walls()?.clone();
-        terrain.union_assign(cambc::map::holes()?)?;
-        terrain.union_assign(cambc::map::altars()?)?;
-        terrain.union_assign(cambc::map::spawn_region(Team::Enemy)?)?;
-        let terrain: &'static Bitboard = Box::leak(Box::new(terrain));
-        TERRAIN.with(|c| {
-            let _ = c.set(terrain);
-        });
-    }
-    let mut blocked = TERRAIN.with(|c| Bitboard::clone(c.get().expect("set above")));
+    let mut blocked = terrain_tiles()?.clone();
     for mask in [
         cambc::vision::champion_tiles(None)?,
         cambc::vision::camp_tiles()?,
         cambc::vision::teleport_tiles()?,
     ] {
         blocked.union_assign(&mask)?;
+    }
+    for (tile, until) in HIDDEN_BLOCKS.with(|h| h.borrow().clone()) {
+        if key.0 < until {
+            blocked.set(tile, true)?;
+        }
     }
     blocked.set(key.1, false)?;
     BLOCKED.with(|c| *c.borrow_mut() = Some((key.0, key.1, blocked.clone())));
@@ -273,7 +309,14 @@ fn dash_to_best(
     if best.0 == origin {
         return Ok(false);
     }
-    let dashed = dash.cast_at(best.0).unwrap_or(false);
+    let dashed = match dash.cast_at(best.0) {
+        Ok(true) => true,
+        Ok(false) => {
+            remember_hidden_block(best.0);
+            false
+        }
+        Err(_) => false,
+    };
     forget_sight();
     Ok(dashed)
 }
@@ -281,8 +324,17 @@ fn dash_to_best(
 // Take one ordinary step. Our occupancy view can lag a unit that just appeared (e.g. right after a
 // dash), and stepping onto a known occupied tile is an error that changes nothing; treat it as not
 // moving instead of ending the turn.
-fn step_to(tile: Vec2) -> bool {
-    me().and_then(|me| me.move_absolute(tile)).unwrap_or(false)
+// A step that fails because an unseen unit stands there is remembered, so we walk round it
+// (HIDDEN_BLOCK_ROUNDS).
+pub(crate) fn step_to(tile: Vec2) -> bool {
+    match me().and_then(|me| me.move_absolute(tile)) {
+        Ok(true) => true,
+        Ok(false) => {
+            remember_hidden_block(tile);
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 pub fn move_towards_closest(goals: Bitboard) -> Result<bool> {
@@ -309,13 +361,12 @@ pub fn move_towards_closest_with_pull(
     Ok(move_towards_closest_with_pull_status(goals, pull, may_dash, DistanceField::UNREACHABLE)?.0)
 }
 
-fn move_towards_closest_with_path_status(goals: Bitboard) -> Result<(bool, Option<bool>)> {
+// Like move_towards_closest, also returning whether a walking path within `max_steps` exists.
+fn move_towards_closest_with_path_status(
+    goals: Bitboard,
+    max_steps: u16,
+) -> Result<(bool, Option<bool>)> {
     let may_dash = DASH_TRAVEL_MIN_STEPS > 0 && fightable_enemies()?.is_empty();
-    let max_steps = if me()?.champion_name()? == ChampionType::Tavi {
-        TAVI_FARM_MAX_PATH_STEPS
-    } else {
-        DistanceField::UNREACHABLE
-    };
     move_towards_closest_with_pull_status(goals, |_| 0.0, may_dash, max_steps)
 }
 
@@ -355,7 +406,7 @@ fn move_towards_closest_with_pull_status(
         Ok(if d == DistanceField::UNREACHABLE {
             f32::MAX
         } else {
-            d as f32 + pull(tile)
+            d as f32 + pull(tile) + centre_bias(tile)
         })
     };
     let mut dashed = false;
@@ -371,7 +422,7 @@ fn move_towards_closest_with_pull_status(
     let origin = me.position()?;
 
     let mut step = origin;
-    let mut best = origin_distance as f32 + pull(origin);
+    let mut best = origin_distance as f32 + pull(origin) + centre_bias(origin);
     for tile in blocked
         .reachable_tiles(origin, me.base_stats()?.base_move_speed as u16)?
         .positions()?
@@ -380,7 +431,7 @@ fn move_towards_closest_with_pull_status(
         if d == DistanceField::UNREACHABLE {
             continue;
         }
-        let score = d as f32 + pull(tile);
+        let score = d as f32 + pull(tile) + centre_bias(tile);
         if score < best {
             step = tile;
             best = score;
@@ -584,9 +635,19 @@ pub fn fight_squad_enemy(rank: usize) -> Result<Option<Vec2>> {
     if enemies.is_empty() {
         return Ok(None);
     }
+    // Enemies in the keep-out zone round their spawn (enemy_keep_out) are only fought from where
+    // we stand, never chased into it.
+    let (here, range) = (me()?.position()?, me()?.attack_range()?);
     let mut ranked = Vec::with_capacity(enemies.len());
     for enemy in enemies {
-        ranked.push((enemy.health()?, enemy.position()?, enemy));
+        let position = enemy.position()?;
+        if distance(here, position) > range && in_enemy_keep_out(position)? {
+            continue;
+        }
+        ranked.push((enemy.health()?, position, enemy));
+    }
+    if ranked.is_empty() {
+        return Ok(None);
     }
     ranked.sort_by(|a, b| {
         a.0.total_cmp(&b.0)
@@ -620,14 +681,57 @@ pub fn fight_squad_enemy_in_attack_range() -> Result<Option<Vec2>> {
     Ok(Some(position))
 }
 
+// A melee enemy this close keeps hitting us in the back while we walk away (to recall, to an
+// altar), so the leader stands still and hits it instead. 0 turns this off.
+pub const STAND_AGAINST_MELEE_WITHIN: i32 = 1;
+
+// Strike the weakest melee enemy within STAND_AGAINST_MELEE_WITHIN without moving. Enemies on
+// their own spawn heal every turn, so trading with them just pins us at the border: they're left
+// alone. Returns the enemy's tile if there was one, even if nothing was ready to hit it with.
+pub fn fight_adjacent_melee() -> Result<Option<Vec2>> {
+    if STAND_AGAINST_MELEE_WITHIN <= 0 {
+        return Ok(None);
+    }
+    let here = me()?.position()?;
+    let spawn = cambc::map::spawn_region(Team::Enemy)?;
+    let mut target: Option<(f32, Champion)> = None;
+    for enemy in &sight()?.enemies {
+        let position = enemy.position()?;
+        if distance(here, position) > STAND_AGAINST_MELEE_WITHIN
+            || enemy.attack_range()? > 1
+            || spawn.is_set(position)?
+        {
+            continue;
+        }
+        let health = enemy.health()?;
+        if target.as_ref().is_none_or(|(weakest, _)| health < *weakest) {
+            target = Some((health, enemy.clone()));
+        }
+    }
+    let Some((_, enemy)) = target else {
+        return Ok(None);
+    };
+    let position = enemy.position()?;
+    strike(std::slice::from_ref(&enemy), false)?;
+    Ok(Some(position))
+}
+
 fn fight_squad_enemy_at(target: &Champion) -> Result<()> {
     let me = me()?;
+    if FIGHT_OUTSIDE_CAMPS && step_out_of_camps(std::slice::from_ref(target))? {
+        strike(std::slice::from_ref(target), true)?;
+        return Ok(());
+    }
     if strike(std::slice::from_ref(target), false)? {
         return Ok(());
     }
     let range = me.attack_range()?;
     let position = target.position()?;
     if distance(me.position()?, position) <= range || !me.can_move()? {
+        return Ok(());
+    }
+    if DASH_INTO_FIGHTS && dash_into_range(position, range)? {
+        strike(std::slice::from_ref(target), true)?;
         return Ok(());
     }
     let max_steps = if me.champion_name()? == ChampionType::Tavi {
@@ -646,6 +750,117 @@ fn fight_squad_enemy_at(target: &Champion) -> Result<()> {
         strike(std::slice::from_ref(target), true)?;
     }
     Ok(())
+}
+
+// A ready dash closes on the enemy we're fighting when it lands us in attack range of it; otherwise
+// we walk. In the squad only Heart of Ruin has one (it lands for 175 damage), and dashes don't count
+// as damaging abilities, so strike() never casts them. Off: dashes are only used to travel.
+pub const DASH_INTO_FIGHTS: bool = true;
+
+fn dash_into_range(target: Vec2, range: i32) -> Result<bool> {
+    let Some(dash) = ready_dash()? else {
+        return Ok(false);
+    };
+    let Some(info) = dash.info()? else {
+        return Ok(false);
+    };
+    let origin = me()?.position()?;
+    let mut best: Option<(i32, Vec2)> = None;
+    for tile in blocked_tiles()?
+        .reachable_tiles(origin, info.as_dyn().range()? as u16)?
+        .positions()?
+    {
+        let gap = distance(tile, target);
+        if gap <= range && best.is_none_or(|(b, _)| gap < b) {
+            best = Some((gap, tile));
+        }
+    }
+    let Some((_, tile)) = best else {
+        return Ok(false);
+    };
+    // false: an unseen unit blocks the landing tile (see dash_to_best); we walk instead.
+    let dashed = match dash.cast_at(tile) {
+        Ok(true) => true,
+        Ok(false) => {
+            remember_hidden_block(tile);
+            false
+        }
+        Err(_) => false,
+    };
+    forget_sight();
+    if dashed {
+        trace("dash-in");
+    }
+    Ok(dashed)
+}
+
+// Fighting enemies while an awake camp has us in range means tanking it as well (often we were
+// clearing it when they arrived): step to a tile out of every awake camp's range, one with an enemy
+// in our attack range if there is one; if no tile is out of range, to the one fewest camps reach
+// (giving the camp up). Off: fight where we stand. Off since 2026-10-20: switching it off alone won
+// 81/126 against 75/126 against the pre-port squad (more kills), and was even against bot-v2;
+// stepping costs Tavi its walk-excluding stun.
+pub const FIGHT_OUTSIDE_CAMPS: bool = false;
+
+fn step_out_of_camps(enemies: &[Champion]) -> Result<bool> {
+    let me = me()?;
+    if !me.can_move()? || enemies.is_empty() {
+        return Ok(false);
+    }
+    let here = me.position()?;
+    let mut camps = Vec::new(); // (position, attack range) of awake camps
+    for camp in &sight()?.camps {
+        if camp.is_awake().unwrap_or(false) {
+            camps.push((camp.spawn_position(), camp.attack_range()?));
+        }
+    }
+    let hits = |tile: Vec2| {
+        camps
+            .iter()
+            .filter(|&&(c, r)| distance(c, tile) <= r)
+            .count()
+    };
+    let now = hits(here);
+    if now == 0 {
+        return Ok(false);
+    }
+    let range = me.attack_range()?;
+    let mut targets = Vec::new();
+    for enemy in enemies {
+        targets.push(enemy.position()?);
+    }
+    let blocked = blocked_tiles()?;
+    let mut best: Option<((usize, bool, i32), Vec2)> = None;
+    for tile in blocked
+        .reachable_tiles(here, me.base_stats()?.base_move_speed as u16)?
+        .positions()?
+    {
+        if tile == here {
+            continue;
+        }
+        let in_range = targets.iter().any(|&t| distance(t, tile) <= range);
+        let nearest = targets
+            .iter()
+            .map(|&t| distance(t, tile))
+            .min()
+            .unwrap_or(0);
+        let key = (hits(tile), !in_range, nearest);
+        if best.is_none_or(|(k, _)| key < k) {
+            best = Some((key, tile));
+        }
+    }
+    let Some(((count, _, _), tile)) = best else {
+        return Ok(false);
+    };
+    if count >= now || !step_to(tile) {
+        return Ok(false);
+    }
+    trace(if count == 0 {
+        "fight-step-out-of-camps"
+    } else {
+        "fight-leave-camp"
+    });
+    Ok(true)
 }
 
 pub fn fight_squad_enemy_at_position(target: Vec2) -> Result<bool> {
@@ -1250,9 +1465,12 @@ impl WalkGrid {
         let mut pos = end;
         while self.get(pos) > 1 {
             let d = self.get(pos);
+            // Of the neighbours a step closer, the one nearest the map's centre (centre_bias): the
+            // first one found went the same way every time, along walls and edges.
             pos = (-1..=1)
                 .flat_map(|dx| (-1..=1).map(move |dy| Vec2::new(pos.x + dx, pos.y + dy)))
-                .find(|&n| self.get(n) == d - 1)?;
+                .filter(|&n| self.get(n) == d - 1)
+                .min_by(|&a, &b| centre_bias(a).total_cmp(&centre_bias(b)))?;
             path.push(pos);
         }
         path.reverse();
@@ -1474,6 +1692,33 @@ pub fn follow_squad_target(target: Vec2) -> Result<()> {
     move_towards_closest(goals).map(|_| ())
 }
 
+// Ties between equally short steps go towards the middle of the map. Moving in 8 directions there
+// are usually several, and the first one listed won, the same way every time, so paths ran along
+// walls and the map's edge. The bias is at most CENTRE_TIE_BREAK of a step (straight-line distance
+// to the centre, over the map's diagonal), so it never makes a path longer. 0.0: off.
+pub const CENTRE_TIE_BREAK: f32 = 0.2;
+
+pub fn centre_bias(tile: Vec2) -> f32 {
+    thread_local! {
+        static MAP: std::cell::OnceCell<(f32, f32, f32)> = const { std::cell::OnceCell::new() };
+    }
+    if CENTRE_TIE_BREAK <= 0.0 {
+        return 0.0;
+    }
+    let (cx, cy, diagonal) = MAP.with(|m| {
+        *m.get_or_init(|| {
+            let walls = cambc::map::walls().ok();
+            let (w, h) = walls.map_or((1, 1), |b| (b.width(), b.height()));
+            let (w, h) = (w as f32, h as f32);
+            ((w - 1.0) / 2.0, (h - 1.0) / 2.0, (w * w + h * h).sqrt().max(1.0))
+        })
+    });
+    let (dx, dy) = (tile.x as f32 - cx, tile.y as f32 - cy);
+    CENTRE_TIE_BREAK * (dx * dx + dy * dy).sqrt() / diagonal
+}
+
+// Idle near `target`: a random step among the free tiles within `max_distance` of it that take us no
+// further from the map's centre (any free one if none do).
 pub fn wander_adjacent_near(target: Vec2, max_distance: i32) -> Result<bool> {
     let me = me()?;
     let origin = me.position()?;
@@ -1499,6 +1744,14 @@ pub fn wander_adjacent_near(target: Vec2, max_distance: i32) -> Result<bool> {
     if candidates.is_empty() {
         return Ok(false);
     }
+    let inward: Vec<Vec2> = candidates
+        .iter()
+        .copied()
+        .filter(|&t| centre_bias(t) <= centre_bias(origin))
+        .collect();
+    if !inward.is_empty() {
+        candidates = inward;
+    }
     let start = crate::random_number(candidates.len() as u32) as usize;
     for offset in 0..candidates.len() {
         let tile = candidates[(start + offset) % candidates.len()];
@@ -1509,7 +1762,33 @@ pub fn wander_adjacent_near(target: Vec2, max_distance: i32) -> Result<bool> {
     Ok(false)
 }
 
+// Followers head for the posted target themselves (tiles within their attack range of it, off the
+// camp tiles) instead of staying within 2 tiles of Tavi until Tavi has it in range. Packed round
+// Tavi they blocked its way (ambush: all four boxed Tavi in from round 104 to 1504), but that's
+// now handled by Tavi starting the winnable camp in front of it (ATTACK_ELIGIBLE_IN_RANGE) and
+// giving up a target it's stuck on (STUCK_TURNS). Off (2026-10-20, 132 games each against all of
+// these off): following Tavi won 70 to 62 with fewer deaths (1740 against 1896); going to the
+// target won 67 to 65 but died a third more (2220 against 1671: they fought ahead of Tavi in small
+// groups), and with at most 2 tiles' lead (FOLLOWER_MAX_LEAD) 65 to 67.
+pub const FOLLOWERS_GO_TO_TARGET: bool = false;
+// ... but no more than this many tiles closer to it than Tavi (when we know where Tavi is), so they
+// don't run ahead and fight on their own. 0: no limit.
+pub const FOLLOWER_MAX_LEAD: i32 = 2;
+
 pub fn farm_squad_target(target: Vec2, tavi_position: Option<Vec2>) -> Result<()> {
+    if FOLLOWERS_GO_TO_TARGET {
+        if attack_squad_camp(target)? {
+            return Ok(());
+        }
+        if let Some(tavi) = tavi_position.filter(|_| FOLLOWER_MAX_LEAD > 0) {
+            if distance(me()?.position()?, target) + FOLLOWER_MAX_LEAD < distance(tavi, target) {
+                return Ok(());
+            }
+        }
+        let mut goals = tiles_around(target, me()?.attack_range()?)?;
+        remove_camp_tiles(&mut goals)?;
+        return move_towards_closest(goals).map(|_| ());
+    }
     if is_camp_tile(me()?.position()?)? {
         return follow_squad_target(tavi_position.unwrap_or(target));
     }
@@ -1567,6 +1846,16 @@ fn attack_squad_camp(target: Vec2) -> Result<bool> {
 
 pub fn current_farm_target() -> Option<Vec2> {
     FARM_TARGET_MEMORY.with(|memory| memory.borrow().current)
+}
+
+// Whether the current farm target is one we found no path to within TAVI_FARM_MAX_PATH_STEPS.
+fn current_target_too_far() -> bool {
+    FARM_TARGET_MEMORY.with(|memory| {
+        let memory = memory.borrow();
+        memory
+            .current
+            .is_some_and(|target| memory.unreachable.iter().any(|&(tile, _)| tile == target))
+    })
 }
 
 pub fn farm_target_active(target: Vec2) -> Result<Option<bool>> {
@@ -1733,16 +2022,19 @@ pub fn expected_dmg(tile: Vec2) -> Result<f32> {
     Ok(Threats::scan()?.damage_at(tile))
 }
 
-// Awake camps attack once per round; camps never move, so a live camp sits on its spawn tile.
-// There is no "awake" query: a group counts as awake once a visible member is damaged or missing
-// (dead). Groups that went back to sleep after two quiet rounds are still counted, overestimating.
-// Only groups with a camp in sight can hurt us, so start from the visible camps.
+// Off: the old guess only (see below).
+pub const CAMP_AWAKE_QUERY: bool = true;
+
+// Awake camps attack once per round; camps never move, so a live camp sits on its spawn tile. A group
+// is awake if any visible member says so (Camp::is_awake). If that query fails, fall back to the old
+// guess: awake once a visible member is damaged or missing (dead), which kept counting groups that
+// had gone back to sleep after two quiet rounds. Only groups with a camp in sight can hurt us, so
+// start from the visible camps.
 fn camp_threats(threats: &mut Vec<Threat>) -> Result<()> {
     let sight = sight()?;
     if sight.camps.is_empty() {
         return Ok(());
     }
-    let visible = &sight.visible;
     let groups = camp_groups()?;
     let mut done = Vec::new();
     for camp in &sight.camps {
@@ -1759,16 +2051,15 @@ fn camp_threats(threats: &mut Vec<Threat>) -> Result<()> {
             let spawn = member.spawn_position();
             match sight.camps.iter().find(|c| c.spawn_position() == spawn) {
                 Some(c) => {
-                    if c.health()? < c.max_health()? {
-                        awake = true;
-                    }
+                    awake |= match c.is_awake() {
+                        Ok(a) if CAMP_AWAKE_QUERY => a,
+                        _ => c.health()? < c.max_health()?,
+                    };
                     live.push(c);
                 }
-                None => {
-                    if visible.is_set(spawn)? {
-                        awake = true;
-                    }
-                } // seen dead
+                // Seen dead: the live members say whether the group is awake (the old guess
+                // counted a dead member as awake).
+                None => awake |= !CAMP_AWAKE_QUERY && sight.visible.is_set(spawn)?,
             }
         }
         if !awake {
@@ -1784,6 +2075,56 @@ fn camp_threats(threats: &mut Vec<Threat>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// The most damage we could take next round where we stand, if everything that can reach us hits at
+// once: each enemy champion within its attack range plus a turn of walking lands a basic attack, a
+// second one if its attack reset is ready, and its ready damaging abilities in range; every awake
+// camp with us in range hits once. For "could we die this round" checks (Heart of Ruin's shield).
+pub fn burst_damage_here() -> Result<f32> {
+    let me = me()?;
+    let here = me.position()?;
+    let sight = sight()?;
+    let mut burst = 0.0;
+    for camp in &sight.camps {
+        if camp.is_awake().unwrap_or(false)
+            && distance(camp.spawn_position(), here) <= camp.attack_range()?
+        {
+            burst += camp.strength()?;
+        }
+    }
+    for enemy in &sight.enemies {
+        let gap = distance(enemy.position()?, here);
+        let walk = enemy.base_stats()?.base_move_speed as i32;
+        let range = enemy.attack_range()?;
+        if gap > range + walk {
+            continue;
+        }
+        let strength = enemy.strength()?;
+        burst += strength;
+        for ability in enemy.abilities() {
+            if !ability.is_ready().unwrap_or(true) {
+                continue;
+            }
+            if ability.is_attack_reset() {
+                burst += strength;
+            } else if is_damaging(ability) {
+                let reach = ability
+                    .info()
+                    .ok()
+                    .flatten()
+                    .and_then(|i| i.as_dyn().range().ok())
+                    .map_or(range, |r| r as i32);
+                if gap <= reach + walk {
+                    burst += ability
+                        .damage_amount_against(me)
+                        .or_else(|_| ability.damage_amount())
+                        .unwrap_or(0.0);
+                }
+            }
+        }
+    }
+    Ok(burst)
 }
 
 // Enemies basic-attack anything within attack range. Abilities are averaged over their cooldown
@@ -1871,41 +2212,131 @@ pub fn enemy_threats_of(enemy: &Champion, threats: &mut Vec<Threat>) -> Result<(
     Ok(())
 }
 
-// How much a step closer to our spawn is worth, in steps closer to safety, when fleeing. Below 1,
-// so every step still makes progress toward safety; without it, ties between equally close safe
-// tiles went to whichever came first in tile order, so we fled bottom-right.
+// How much a step closer to our spawn (on foot, spawn_steps) is worth, in steps closer to safety,
+// when fleeing. Below 1, every step still makes progress toward the nearest safe tile; above 1,
+// heading home can win over it (bot-v2 uses 1.25: on hedgerows its Prism fled through the centre
+// and died there). In the squad 1.25 with WALK_HOME_STEPS 5 lost to 0.5 with 0 (2026-10-20: 81/126
+// against 75/126 against the pre-port squad, 50/126 against 44/126 against bot-v2), so it stays 0.5.
 pub const RETREAT_HOME_PULL: f32 = 0.5;
+
+// The pull towards home for `tile` (see RETREAT_HOME_PULL).
+pub fn home_pull(tile: Vec2) -> Result<f32> {
+    let steps = match spawn_steps(tile) {
+        Some(steps) => steps,
+        None => distance(tile, ally_spawn_centre()?),
+    };
+    Ok(RETREAT_HOME_PULL * steps as f32)
+}
 
 // Centre of our spawn region.
 pub fn ally_spawn_centre() -> Result<Vec2> {
-    let tiles = cambc::map::spawn_region(Team::Ally)?.positions()?;
-    let n = tiles.len().max(1) as i32;
-    let (x, y) = tiles.iter().fold((0, 0), |(x, y), t| (x + t.x, y + t.y));
-    Ok(Vec2::new(x / n, y / n))
+    spawn_centre(Team::Ally)
 }
 
 fn enemy_spawn_centre() -> Result<Vec2> {
-    let tiles = cambc::map::spawn_region(Team::Enemy)?.positions()?;
+    spawn_centre(Team::Enemy)
+}
+
+// Spawn centres never change: worked out once per champion (listing the spawn tiles is a host
+// call, and banking asked for both centres for every altar).
+fn spawn_centre(team: Team) -> Result<Vec2> {
+    thread_local! {
+        static CENTRES: std::cell::Cell<[Option<Vec2>; 2]> = const { std::cell::Cell::new([None, None]) };
+    }
+    let slot = usize::from(team == Team::Enemy);
+    if let Some(centre) = CENTRES.with(|c| c.get()[slot]) {
+        return Ok(centre);
+    }
+    let tiles = cambc::map::spawn_region(team)?.positions()?;
     let n = tiles.len().max(1) as i32;
     let (x, y) = tiles.iter().fold((0, 0), |(x, y), t| (x + t.x, y + t.y));
-    Ok(Vec2::new(x / n, y / n))
+    let centre = Vec2::new(x / n, y / n);
+    CENTRES.with(|c| {
+        let mut all = c.get();
+        all[slot] = Some(centre);
+        c.set(all);
+    });
+    Ok(centre)
 }
+
+// Walking steps from any tile to our spawn region over fixed terrain, worked out once per champion
+// (one uncapped field, ~10-30k fuel, so at the end of a turn with fuel to spare: bot.rs) and copied
+// into Rust memory, so lookups cost no host calls.
+thread_local! {
+    static SPAWN_STEPS: OnceCell<Option<(Vec<u16>, i32)>> = const { OnceCell::new() };
+}
+
+pub fn prepare_spawn_steps() {
+    SPAWN_STEPS.with(|s| {
+        s.get_or_init(|| spawn_field().ok());
+    });
+}
+
+// Steps from `tile` to our spawn region. None until prepare_spawn_steps has run, or if it failed.
+pub fn spawn_steps(tile: Vec2) -> Option<i32> {
+    SPAWN_STEPS.with(|s| {
+        let (steps, width) = s.get()?.as_ref()?;
+        if tile.x < 0 || tile.y < 0 || tile.x >= *width {
+            return None;
+        }
+        let d = *steps.get((tile.y * width + tile.x) as usize)?;
+        (d != DistanceField::UNREACHABLE).then_some(d as i32)
+    })
+}
+
+fn spawn_field() -> Result<(Vec<u16>, i32)> {
+    let mut field = DistanceField::new()?;
+    field.compute(
+        terrain_tiles()?,
+        cambc::map::spawn_region(Team::Ally)?,
+        &mut Bitboard::new()?,
+        DistanceField::UNREACHABLE,
+    )?;
+    Ok((field.export_linear_buffer()?, field.width()))
+}
+
+// Bank only at altars on our side of the map (no further from our spawn than from theirs), unless
+// one is within BANK_NEAR_TILES: in bot-v2 the nearest altar sent champions to the one next to the
+// enemy base (hedgerows: 18% of Prism's banking walks, and two of its deaths), and Tavi carries
+// 200 gems. Off: any altar.
+pub const BANK_OWN_SIDE: bool = true;
+
+fn altar_allowed(altar: Vec2, here: Vec2) -> Result<bool> {
+    Ok(!BANK_OWN_SIDE
+        || distance(here, altar) <= BANK_NEAR_TILES
+        || distance(altar, ally_spawn_centre()?) <= distance(altar, enemy_spawn_centre()?))
+}
+
+// A lock check is a host call costing ~2.25k (40k a turn over 00lanes' 18 altars), and we only see
+// locks near us anyway: check altars within this many tiles.
+const LOCK_CHECK_TILES: i32 = 8;
 
 // Tribute at an altar in range, otherwise walk toward the nearest unlocked altar.
 pub fn bank_gems() -> Result<()> {
     let me = me()?;
-    // Union all altar approach tiles: the field chooses the nearest reachable altar.
+    // Union all altar approach tiles: the field chooses the nearest reachable altar (on our side,
+    // see BANK_OWN_SIDE; any altar if none is).
+    let here = me.position()?;
+    let range = cambc::constants().submit_gems_range;
     let mut goals = Bitboard::new()?;
+    let mut fallback = Bitboard::new()?;
     for altar in cambc::map::altars()?.positions()? {
-        if cambc::vision::has_altar_lock(altar)? {
+        if distance(here, altar) <= LOCK_CHECK_TILES && cambc::vision::has_altar_lock(altar)? {
             continue;
         }
-        let range = cambc::constants().submit_gems_range;
-        if distance(me.position()?, altar) <= range {
+        let allowed = altar_allowed(altar, here)?;
+        if allowed && distance(here, altar) <= range {
             me.submit_gems(altar)?;
             return Ok(());
         }
-        goals.draw_chebyshev(altar, range as f32)?;
+        if allowed {
+            goals.draw_chebyshev(altar, range as f32)?;
+        } else {
+            fallback.draw_chebyshev(altar, range as f32)?;
+        }
+    }
+    if goals.is_empty()? {
+        goals = fallback;
     }
     checkpoint("bank-goals");
     move_towards_closest(goals)?;
@@ -1953,7 +2384,10 @@ pub fn should_bank() -> Result<bool> {
 pub fn unlocked_altar_within(tiles: i32) -> Result<bool> {
     let here = me()?.position()?;
     for altar in cambc::map::altars()?.positions()? {
-        if distance(here, altar) <= tiles && !cambc::vision::has_altar_lock(altar)? {
+        if distance(here, altar) <= tiles
+            && altar_allowed(altar, here)?
+            && !cambc::vision::has_altar_lock(altar)?
+        {
             return Ok(true);
         }
     }
@@ -1994,7 +2428,7 @@ pub const FUNNEL_HEALERS: bool = true;
 
 // Attack the weakest camp already in range (camps never move, so their spawn tile is their
 // position), skipping groups we'd lose to (collect::CAMP_FIGHT): leave those instead.
-fn attack_camp_in_range() -> Result<bool> {
+pub(crate) fn attack_camp_in_range() -> Result<bool> {
     attack_camp_in_range_for_goals(None)
 }
 
@@ -2190,13 +2624,20 @@ const FARM_ENEMY_DUEL_FUEL: u64 = 70_000;
 pub struct FarmPlan {
     pub goals: Bitboard,
     pub greedy: bool, // the goals are nearby uncaptured rewards or, when enabled, safe camps
+    // Every goal before narrowing to the one target: camps of groups that passed the plan's checks
+    // (reachable, not respawning, no enemy about to reach them, a camp fight we'd win).
+    pub eligible: Bitboard,
 }
 
 const FARM_TARGET_COOLDOWN_ROUNDS: u32 = 2;
 const FARM_TARGET_UNREACHABLE_COOLDOWN_ROUNDS: u32 = 20;
 const DAMAGED_CAMP_MAX_DETOUR: i32 = 3;
-// Bound failed Tavi routes so unreachable farm and combat goals cannot exhaust fuel.
+// Tavi farms camp groups within this many steps on foot: one further away is put off for
+// FARM_TARGET_UNREACHABLE_COOLDOWN_ROUNDS in favour of nearer ones (long walks away from home with
+// a big bag lost games on trenches). If every candidate is that far, Tavi walks to the best of them
+// anyway rather than standing still (on ambush it stood still for 600 rounds).
 const TAVI_FARM_MAX_PATH_STEPS: u16 = 48;
+// Bound failed Tavi routes so unreachable combat goals cannot exhaust fuel.
 const TAVI_COMBAT_MAX_PATH_STEPS: u16 = 32;
 
 #[derive(Default)]
@@ -2230,13 +2671,136 @@ fn report_farm_target_change(
     );
 }
 
-fn farm_target_score(here: Vec2, target: Vec2, enemy_base: Option<(Vec2, f32)>) -> f32 {
-    let travel = distance(here, target) as f32;
+// Steps taken off a target's travel for the progress it makes towards the enemy base (Tavi pushes
+// further out as the game goes on; `enemy_base` is the base and the push per tile of progress).
+// Progress only counts down to the edge of the keep-out zone round the enemy spawn
+// (enemy_keep_out), and a target inside it costs KEEP_OUT_PENALTY steps per tile it's in: Tavi
+// favours the camps on the enemy's side, not the ones next to their base. Unbounded, from round
+// 500 Tavi spent 10-13% of its turns three quarters of the way to the enemy spawn or deeper and
+// died there twice as often as elsewhere (16% of its deaths within 10 tiles of the enemy spawn).
+fn target_push(here: Vec2, target: Vec2, enemy_base: Option<(Vec2, f32)>) -> i32 {
     let Some((base, push)) = enemy_base else {
-        return travel;
+        return 0;
     };
-    let progress = distance(here, base) - distance(target, base);
-    travel - push * progress as f32
+    let keep_out = enemy_keep_out().unwrap_or(0);
+    let depth = |tile: Vec2| distance(tile, base).max(keep_out);
+    let progress = depth(here) - depth(target);
+    let inside = (keep_out - distance(target, base)).max(0);
+    -(push * progress as f32).round() as i32 + KEEP_OUT_PENALTY * inside
+}
+
+// The keep-out zone: within this share of the spawn-to-spawn distance of the enemy spawn centre,
+// and at least KEEP_OUT_MIN_TILES (never more than half the distance). 0.0 turns it off (the push
+// then runs right up to their base). 2026-10-20, 126 games against bot-v2: 62 wins against 50
+// without it, 21% more gems, fewer deaths; even (60/126) against the squad without it.
+pub const KEEP_OUT_SHARE: f32 = 0.3;
+const KEEP_OUT_MIN_TILES: i32 = 10;
+const KEEP_OUT_PENALTY: i32 = 3;
+
+// Radius of the keep-out zone round the enemy spawn centre, in tiles (0: none).
+pub fn enemy_keep_out() -> Result<i32> {
+    if KEEP_OUT_SHARE <= 0.0 {
+        return Ok(0);
+    }
+    let span = distance(ally_spawn_centre()?, enemy_spawn_centre()?);
+    Ok(((span as f32 * KEEP_OUT_SHARE).round() as i32)
+        .max(KEEP_OUT_MIN_TILES)
+        .min(span / 2))
+}
+
+// Whether `tile` is in the keep-out zone round the enemy spawn.
+pub fn in_enemy_keep_out(tile: Vec2) -> Result<bool> {
+    let keep_out = enemy_keep_out()?;
+    Ok(keep_out > 0 && distance(tile, enemy_spawn_centre()?) < keep_out)
+}
+
+// Farm targets are ranked by walking steps over fixed terrain, not straight-line distance: where a
+// line of holes or walls splits the map, a camp a few tiles away can be a long walk round (bot-v2
+// on spine: an elk 3 tiles away across the holes was ~47 steps, and 42% of new farm targets were
+// such camps, walked to and often given up on). Off: straight-line distance.
+pub const WALK_TARGETS: bool = true;
+// The field from us stops here; tiles further away rank after every tile within it, by
+// straight-line distance.
+const FIELD_STEPS: u16 = 60;
+// The field only needs to reach the nearest candidate (in a straight line) plus this many steps of
+// detour: it costs by the area it covers, ~14k at 60 steps on a 100x100 map against ~7k at 20.
+const NEAREST_FIELD_SLACK: i32 = 20;
+
+// Steps from `origin` to any tile, the field built on the first lookup. Any failure falls back to
+// straight-line distance.
+struct StepsFrom {
+    origin: Vec2,
+    field: OnceCell<Option<DistanceField>>,
+    cap: std::cell::Cell<u16>, // how far the field searches (set before it's built)
+}
+
+impl StepsFrom {
+    fn new(origin: Vec2) -> Self {
+        Self {
+            origin,
+            field: OnceCell::new(),
+            cap: std::cell::Cell::new(FIELD_STEPS),
+        }
+    }
+
+    // The nearest of `tiles` on foot, with `extra` steps added per tile. Steps are never fewer
+    // than the straight-line distance, so one pass works out those lower bounds and only tiles
+    // whose bound beats the best found so far are looked up (a lookup is a host call).
+    fn nearest_with(&self, tiles: &[Vec2], extra: impl Fn(Vec2) -> i32) -> Option<Vec2> {
+        if tiles.len() <= 1 {
+            return tiles.first().copied();
+        }
+        let mut bounds = Vec::with_capacity(tiles.len());
+        let mut first = 0;
+        for (i, &tile) in tiles.iter().enumerate() {
+            let bound = distance(self.origin, tile) + extra(tile);
+            if bound < bounds.get(first).copied().unwrap_or(i32::MAX) {
+                first = i;
+            }
+            bounds.push(bound);
+        }
+        if self.field.get().is_none() {
+            let reach = (distance(self.origin, tiles[first]) + NEAREST_FIELD_SLACK)
+                .clamp(1, FIELD_STEPS as i32);
+            self.cap.set(reach as u16);
+        }
+        let mut best = (self.steps(tiles[first]) + extra(tiles[first]), first);
+        for (i, &bound) in bounds.iter().enumerate() {
+            if i != first && bound < best.0 {
+                let steps = self.steps(tiles[i]) + extra(tiles[i]);
+                if steps < best.0 {
+                    best = (steps, i);
+                }
+            }
+        }
+        Some(tiles[best.1])
+    }
+
+    fn steps(&self, tile: Vec2) -> i32 {
+        let straight = distance(self.origin, tile);
+        if !WALK_TARGETS {
+            return straight;
+        }
+        let field = self
+            .field
+            .get_or_init(|| steps_field(self.origin, self.cap.get()).ok());
+        match field.as_ref().map(|f| f.get(tile)) {
+            Some(Ok(d)) if d != DistanceField::UNREACHABLE => d as i32,
+            Some(Ok(_)) => self.cap.get() as i32 + straight,
+            _ => straight,
+        }
+    }
+}
+
+fn steps_field(origin: Vec2, cap: u16) -> Result<DistanceField> {
+    let mut field = DistanceField::new()?;
+    field.compute(
+        terrain_tiles()?,
+        &tiles_around(origin, 0)?,
+        &mut Bitboard::new()?,
+        cap,
+    )?;
+    Ok(field)
 }
 
 fn avoid_abandoned_farm_targets(
@@ -2260,7 +2824,9 @@ fn avoid_abandoned_farm_targets(
     };
 
     let previous = FARM_TARGET_MEMORY.with(|memory| memory.borrow().current);
-    let score = |tile| farm_target_score(here, tile, enemy_base);
+    let steps = StepsFrom::new(here);
+    let best =
+        |tiles: &[Vec2]| steps.nearest_with(tiles, |tile| target_push(here, tile, enemy_base));
     let (target, changed_reason) = FARM_TARGET_MEMORY.with(|memory| {
         let mut memory = memory.borrow_mut();
         memory.abandoned.retain(|&(_, until)| round < until);
@@ -2280,13 +2846,16 @@ fn avoid_abandoned_farm_targets(
             .filter(|&tile| !memory.abandoned.iter().any(|&(old, _)| old == tile))
             .collect();
         let target = if not_unreachable.is_empty() {
-            None
+            // Every candidate is too far (or blocked), and they're all walkable (farm_statics), so
+            // keep heading for one rather than stand still: the current target if it's still a
+            // candidate, else the best. farm_camps walks to it uncapped.
+            memory
+                .current
+                .filter(|tile| candidates_for_target.contains(tile))
+                .or_else(|| best(&candidates_for_target))
         } else if available.is_empty() {
             memory.abandoned.clear();
-            not_unreachable
-                .iter()
-                .copied()
-                .min_by(|&a, &b| score(a).total_cmp(&score(b)))
+            best(&not_unreachable)
         } else {
             let current_is_reachable = memory
                 .current
@@ -2295,16 +2864,10 @@ fn avoid_abandoned_farm_targets(
                 if let Some(current) = memory.current.filter(|tile| available.contains(tile)) {
                     Some(current)
                 } else {
-                    available
-                        .iter()
-                        .copied()
-                        .min_by(|&a, &b| score(a).total_cmp(&score(b)))
+                    best(&available)
                 }
             } else {
-                available
-                    .iter()
-                    .copied()
-                    .min_by(|&a, &b| score(a).total_cmp(&score(b)))
+                best(&available)
             }
         };
         let reason = previous.filter(|&old| Some(old) != target).map(|old| {
@@ -2380,12 +2943,22 @@ struct GroupInfo {
     radius: i32,          // furthest camp from the centre
     preferred: [bool; 2], // has a camp preferred before / from FARM_GEM_PHASE_ROUND
     gold_only: bool,
+    reachable: bool, // a camp tile we can walk to from our spawn
 }
 
 struct FarmStatics {
     groups: Vec<GroupInfo>,
     all: Bitboard,            // every camp's tile
     preferred: [Bitboard; 2], // camps of preferred groups, per phase
+}
+
+// Tiles we can walk to from our spawn, whatever stands on them: walls, holes, altars and the enemy
+// spawn block. None if we have no spawn tile (then every group counts as reachable).
+fn walkable_from_spawn() -> Result<Option<Bitboard>> {
+    let Some(&spawn) = cambc::map::spawn_region(Team::Ally)?.positions()?.first() else {
+        return Ok(None);
+    };
+    Ok(Some(terrain_tiles()?.reachable_tiles(spawn, 1000)?))
 }
 
 fn farm_statics() -> Result<&'static FarmStatics> {
@@ -2400,7 +2973,18 @@ fn farm_statics() -> Result<&'static FarmStatics> {
         all: Bitboard::new()?,
         preferred: [Bitboard::new()?, Bitboard::new()?],
     };
+    // Only Heart of Ruin can dash, and the squad goes where Tavi walks, so a group cut off by holes
+    // or walls can never be captured, and it's never a goal. On ambush Tavi kept picking the two
+    // sealed gem rooms, found no path and stood still for a turn per camp tile, every time the
+    // unreachable memory ran out.
+    let walkable = walkable_from_spawn()?;
     for group in camp_groups()? {
+        let mut reachable = walkable.is_none();
+        if let Some(walkable) = &walkable {
+            for camp in group.camps() {
+                reachable |= walkable.is_set(camp.spawn_position())?;
+            }
+        }
         let n = group.camps().len().max(1) as i32;
         let (x, y) = group.camps().iter().fold((0, 0), |(x, y), c| {
             (x + c.spawn_position().x, y + c.spawn_position().y)
@@ -2423,7 +3007,7 @@ fn farm_statics() -> Result<&'static FarmStatics> {
                 .iter()
                 .any(|c| preferred_in_phase(c.kind(), round));
         }
-        for camp in group.camps() {
+        for camp in group.camps().iter().filter(|_| reachable) {
             statics.all.set(camp.spawn_position(), true)?;
             for (phase, round) in [0, FARM_GEM_PHASE_ROUND].into_iter().enumerate() {
                 let keep = if FARM_PHASE_BY_GROUP {
@@ -2441,6 +3025,7 @@ fn farm_statics() -> Result<&'static FarmStatics> {
             radius,
             preferred,
             gold_only,
+            reachable,
         });
     }
     let statics: &'static FarmStatics = Box::leak(Box::new(statics));
@@ -2546,6 +3131,9 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     let mut holding = false;
     for (index, group) in groups.iter().enumerate() {
         let info = &statics.groups[index];
+        if !info.reachable {
+            continue;
+        }
         if skip_gold_only && info.gold_only {
             if previous_group == Some(index) {
                 previous_target_reason = Some("tavi-strong-gold-only-group");
@@ -2618,11 +3206,15 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
         if unwinnable && previous_group == Some(index) {
             previous_target_reason = Some("camp-fight-unwinnable");
         }
+        // Some members dead but the group not cleared: the rest are alive out of our sight (a bush).
+        let hidden_alive = crate::collect::PARTIAL_GROUPS && seen && !any_live && !reward;
         // While part of the group is alive, only its live (or unseen) camps are goals. A dead camp's
         // tile only becomes a goal once the whole group is cleared (standing there captures it):
         // otherwise a melee champion standing on one counts as having arrived and never walks over
-        // to the live camp out of reach (seen stuck for 65 turns).
-        let is_goal = |c: &Camp| !(any_live && seen_dead.contains(&c.spawn_position()));
+        // to the live camp out of reach (seen stuck for 65 turns). With its live members out of
+        // sight, its goals are the tiles we can't see, to find them.
+        let is_goal =
+            |c: &Camp| !((any_live || hidden_alive) && seen_dead.contains(&c.spawn_position()));
         if gap <= max_reach + vision
             && !enemy_reach.is_empty()
             && group.camps().iter().filter(|c| is_goal(c)).any(|c| {
@@ -2647,15 +3239,18 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                 .iter()
                 .any(|camp| camp.spawn_position() == *tile)
         }) {
-            if any_live && seen_dead.contains(&tile) {
+            if (any_live || hidden_alive) && seen_dead.contains(&tile) {
                 previous_target_reason = Some("camp-dead-while-group-still-active");
             }
         }
         if reward && group.camps().iter().any(|c| c.spawn_position() == here) {
             holding = crate::collect::CAPTURE_HOLD;
         }
-        if any_live {
+        if any_live || hidden_alive {
             not_goals.extend(seen_dead.iter().copied());
+        }
+        if hidden_alive {
+            trace("group-hidden-alive");
         }
         available[index] = true;
         if info.preferred[phase] {
@@ -2780,6 +3375,7 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
             previous_target_reason = Some(selection_reason);
         }
     }
+    let eligible = goals.clone();
     avoid_abandoned_farm_targets(
         &mut goals,
         round,
@@ -2827,14 +3423,25 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     let plan = std::rc::Rc::new(FarmPlan {
         goals,
         greedy: is_greedy,
+        eligible,
     });
     FARM_PLAN.with(|c| *c.borrow_mut() = Some((round, here, plan.clone())));
     Ok(plan)
 }
 
+// Goals we found no path to (too far, or units standing in a corridor), with the rest of their camp
+// groups: whatever rules out one camp rules out its neighbours too, and marking a tile at a time
+// cost a turn standing still per camp tile (trenches: 4 turns per group, every 20 rounds).
 fn remember_unreachable_farm_goals(goals: &Bitboard, round: u32) -> Result<()> {
     let until = round.saturating_add(FARM_TARGET_UNREACHABLE_COOLDOWN_ROUNDS);
-    let targets = goals.positions()?;
+    let groups = camp_groups()?;
+    let mut targets = Vec::new();
+    for tile in goals.positions()? {
+        match group_at(tile)? {
+            Some(index) => targets.extend(groups[index].camps().iter().map(|c| c.spawn_position())),
+            None => targets.push(tile),
+        }
+    }
     FARM_TARGET_MEMORY.with(|memory| {
         let mut memory = memory.borrow_mut();
         memory.unreachable.retain(|&(_, expires)| round < expires);
@@ -2851,23 +3458,98 @@ fn remember_unreachable_farm_goals(goals: &Bitboard, round: u32) -> Result<()> {
     Ok(())
 }
 
+// With less than this much fuel left, building a plan left too little for the move itself, where
+// turns most often ran out of fuel in bot-v2 (the champion then stands still). Keep walking to the
+// last plan's goals instead, if it's from the last STALE_PLAN_ROUNDS rounds. It only ever reuses
+// the last full plan's own goals, so a low-fuel turn can't flip the target back and forth. 0: off.
+pub const FARM_PLAN_MIN_FUEL: u64 = 60_000;
+const STALE_PLAN_ROUNDS: u32 = 10;
+
+pub fn farm_plan_or_stale() -> Result<std::rc::Rc<FarmPlan>> {
+    if FARM_PLAN_MIN_FUEL > 0 && cambc::fuel_remaining()? < FARM_PLAN_MIN_FUEL {
+        let round = cambc::round_number()?;
+        if let Some(plan) = FARM_PLAN.with(|c| {
+            c.borrow()
+                .as_ref()
+                .filter(|(built, _, _)| round < built + STALE_PLAN_ROUNDS)
+                .map(|(_, _, plan)| plan.clone())
+        }) {
+            trace("plan-low-fuel");
+            return Ok(plan);
+        }
+    }
+    farm_plan()
+}
+
+pub const ATTACK_ELIGIBLE_IN_RANGE: bool = true;
+// 0: never give a target up for being stuck.
+const STUCK_TURNS: u32 = 5;
+
+thread_local! {
+    // Where we've stood without a step towards the farm goals, and for how many turns.
+    static STUCK: std::cell::Cell<Option<(Vec2, u32)>> = const { std::cell::Cell::new(None) };
+}
+
 // Clear camps and capture their rewards, following farm_plan.
 pub fn farm_camps() -> Result<()> {
-    let plan = farm_plan()?;
+    let plan = farm_plan_or_stale()?;
     if plan.goals.is_empty()? {
         return Ok(());
     }
-    let attacked = attack_camp_in_range_for_goals(Some(&plan.goals))?;
+    let mut attacked = attack_camp_in_range_for_goals(Some(&plan.goals))?;
+    // A camp in range we'd win but that isn't the current target: start it rather than walk past
+    // (ambush: Tavi stood 3 tiles from a winnable elk group for 1,400 rounds, its target further on).
+    // The next plan then takes the damaged camp as its target. Off: only the target's camps.
+    if !attacked && ATTACK_ELIGIBLE_IN_RANGE {
+        attacked = attack_camp_in_range_for_goals(Some(&plan.eligible))?;
+        if attacked {
+            trace("farm-attack-eligible");
+        }
+    }
     if attacked {
+        STUCK.with(|s| s.set(None));
         cast_abilities_on_camps(false, Some(&plan.goals))?;
         return Ok(());
     }
-    let (moved, pathable) = move_towards_closest_with_path_status(plan.goals.clone())?;
-    if !moved && pathable == Some(false) && me()?.champion_name()? == ChampionType::Tavi {
+    // Tavi keeps to nearby groups (TAVI_FARM_MAX_PATH_STEPS), unless the target is one already found
+    // too far: then every candidate was (avoid_abandoned_farm_targets), so the walk is uncapped.
+    let capped = me()?.champion_name()? == ChampionType::Tavi && !current_target_too_far();
+    let max_steps = if capped {
+        TAVI_FARM_MAX_PATH_STEPS
+    } else {
+        DistanceField::UNREACHABLE
+    };
+    // Camps don't move: the ones in sight before the step are the ones we might reach after it.
+    let camps_before: Vec<Vec2> = sight()?.camps.iter().map(|c| c.spawn_position()).collect();
+    let (moved, pathable) = move_towards_closest_with_path_status(plan.goals.clone(), max_steps)?;
+    if !moved && pathable == Some(false) && capped {
         remember_unreachable_farm_goals(&plan.goals, cambc::round_number()?)?;
     }
+    // A path exists but no step gets us closer (units in the way): after STUCK_TURNS such turns in
+    // a row on one tile, give the target up as unreachable for now, so the next plan picks another.
+    if moved || pathable != Some(true) {
+        STUCK.with(|s| s.set(None));
+    } else {
+        let here = me()?.position()?;
+        let turns = STUCK.with(|s| match s.get() {
+            Some((tile, n)) if tile == here => n + 1,
+            _ => 1,
+        });
+        STUCK.with(|s| s.set(Some((here, turns))));
+        if STUCK_TURNS > 0 && turns >= STUCK_TURNS {
+            trace("farm-stuck");
+            remember_unreachable_farm_goals(&plan.goals, cambc::round_number()?)?;
+            STUCK.with(|s| s.set(None));
+        }
+    }
+    // Attack after the step only with a camp in range of where we now stand: the check rebuilds
+    // sight and the camp-fight context for the new tile (~16k fuel in bot-v2).
     if moved {
-        if attack_camp_in_range_for_goals(Some(&plan.goals))? {
+        let me = me()?;
+        let (here, range) = (me.position()?, me.attack_range()?);
+        if camps_before.iter().any(|&c| distance(c, here) <= range)
+            && attack_camp_in_range_for_goals(Some(&plan.goals))?
+        {
             cast_abilities_on_camps(true, Some(&plan.goals))?;
         }
     }
@@ -2875,8 +3557,12 @@ pub fn farm_camps() -> Result<()> {
 }
 
 // Ward a hidden tile next to us (a bush, or behind a wall) so we see into it: bushes first, then
-// the furthest from us (the ward sees 6 tiles round it). Wards are free and recharge after a
-// round; we keep our current one while it's within WARD_KEEP_TILES of us.
+// the furthest from us (the ward sees 6 tiles round it). Wards are free and recharge in 10 rounds
+// (since the balance patch); we keep our current one while it's within WARD_KEEP_TILES of us.
+// Tried 2026-10-20: warding only where the ward would show 8+ hidden tiles (wall shadows, bushes
+// we aren't in; engine ward-vision query), with the same fuel use: 79 fewer wards a game cost
+// bot-v2 55 wins against 71 for this rule (126 games), the squad 61 against 65. The extra vision
+// from the cheap wards is worth more than saving the charge.
 pub const WARD_HIDDEN: bool = true;
 const WARD_KEEP_TILES: i32 = 5;
 

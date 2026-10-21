@@ -2,6 +2,8 @@
 
 Event: cambc2026a. Exported from the current handbook, including all published champion specifications. Interactive diagrams are represented as text.
 
+> **Balance patch (announced 2026-10, not yet in the engine):** the numbers below already include it. These are champion stats and kits, camp rewards and ranges, kill gold of 100, a 10-round ward cooldown and 5-hit altar locks. The new Golem camp (5,000 HP, 120 strength, range 4, 160 gold, 36 gems, respawn 80) isn't documented yet. Until the official engine update, local `cambc` games still use the old values.
+
 ## The game
 
 ### How to win
@@ -141,10 +143,10 @@ Base values per monster, before champion bonuses. Respawn timers begin after the
 
 | Monster | Health | Strength | Gold | Gems | Respawn |
 | --- | --- | --- | --- | --- | --- |
-| Wolf | 1,350 | 20 | 90 | 22 | 40 rounds |
-| Elk | 2,400 | 60 | 160 | 36 | 60 rounds |
-| Gem cluster | 500 | 0 | 0 | 24 | 50 rounds |
-| Gold cluster | 500 | 0 | 35 | 0 | 50 rounds |
+| Wolf | 1,350 | 20 | 40 | 4 | 40 rounds |
+| Elk | 2,400 | 60 | 90 | 15 | 60 rounds |
+| Gem cluster | 500 | 0 | 0 | 7 | 50 rounds |
+| Gold cluster | 500 | 0 | 20 | 0 | 50 rounds |
 | Monolith | 20,000 | 200 | 300 | 200 | 150 rounds |
 
 ### What happens next?
@@ -156,7 +158,7 @@ After a camp is defeated, its respawn timer begins. After the timer has finished
 - Rewards combine every monster in the group.
 - Allies on the region split the reward; the lowest ID gets the remainder.
 - Extra allies do not speed capture. Empty or contested regions reset it.
-- All monsters have attack range 3 and vision 8, see through bushes and do not chase.
+- Wolves and clusters have attack range 3, elk 4 and the monolith 5. All monsters have vision 8, see through bushes and do not chase.
 - Damage wakes the group; two rounds without an in-range champion let it sleep.
 
 ## Gems & altars
@@ -185,9 +187,9 @@ Tribute duration is max(1, ceil(carried gems / 10)) owner turn ends. The startin
 
 ### Altar locks
 
-Altar locks are a consumable you can purchase for 10g, and carry one at a time. You can place them on altars if you are within range, cancelling enemy channels, or simply delaying them by leaving them there. It takes 3 basic attacks to clear the lock, which is also triggered by the tributing action in the engine.
+Altar locks are a consumable you can purchase for 10g, and carry one at a time. You can place them on altars if you are within range, cancelling enemy channels, or simply delaying them by leaving them there. It takes 5 basic attacks to clear the lock, which is also triggered by the tributing action in the engine.
 
-An altar lock blocks opposing tributes but allows its owner's team to tribute. Placing it cancels existing tribute channels at that altar. Three basic attacks remove it.
+An altar lock blocks opposing tributes but allows its owner's team to tribute. Placing it cancels existing tribute channels at that altar. Five basic attacks remove it.
 
 #### Tributing against a lock
 
@@ -263,14 +265,14 @@ The shop also has some consumable items, each costing 10 gold. You may carry onl
 
 | Tool | Use |
 | --- | --- |
-| Altar lock | Place on an altar within two tiles. Blocks enemy tributes until removed by three basic attacks. |
+| Altar lock | Place on an altar within two tiles. Blocks enemy tributes until removed by five basic attacks. |
 | Teleport crystal | Range: 3 tiles, including diagonals. Channel for three of your turn ends, including this turn. Reserves a legal free destination, then flashes there at your next turn start after the timer reaches zero, ignoring terrain in between. |
 
 ### You should know:
 
 - **Stats stack**: Every shard counts, including those inside duplicate emblems.
 - **Emblem passives don’t**: A second emblem of a family adds no extra passive.
-- **Gold bonuses add**: Treasure with Vesper Vale: 20% + 20% = 40%.
+- **Gold bonuses add**: Treasure with Vesper Vale: 33% + 20% = 53%.
 - **Spawn purchases heal**: Buying Health on your spawn heals the amount gained; Tavi’s field purchases do not.
 - **Only Tavi can sell**: On spawn, for the full purchase value. Refunds are not earned gold.
 
@@ -295,9 +297,9 @@ Champions normally see up to 8 tiles using symmetric shadowcasting. Walls and bu
 
 ### Wards
 
-Each champion has a free ward, that can be placed to expand their personal vision. You may freely replace it, once per round, but note that you can/will only ever have one active.
+Each champion has a free ward, that can be placed to expand their personal vision. You may replace it once its 10-round cooldown is up, but note that you can/will only ever have one active.
 
-- **Free ward**: One charge, recharging one round after use.
+- **Free ward**: One charge, recharging ten rounds after use.
 - **Within 2 tiles**: It sees 6 tiles, with the same line-of-sight rules.
 - **One active ward**: A new ward replaces the old one.
 - **Permanent**: Wards do not expire or take damage.
@@ -312,13 +314,13 @@ Recall to heal safely. Die, and you lose your carried gems and sit out 60 rounds
 
 ### When a champion dies
 
-The killer receives all carried gems and 50 base gold; assists award no gold. Camp kills destroy carried gems. Dead champions retain shopping turns and respawn at their next turn start after 60 owner turn-end ticks, when a spawn tile is available, with full health and abilities reset.
+The killer receives all carried gems and 100 base gold; assists award no gold. Camp kills destroy carried gems. Dead champions retain shopping turns and respawn at their next turn start after 60 owner turn-end ticks, when a spawn tile is available, with full health and abilities reset.
 
-When a champion dies they respawn on their spawn tiles after 60 rounds, awarding their killer all the gems they were carrying in addition to 50 gold.
+When a champion dies they respawn on their spawn tiles after 60 rounds, awarding their killer all the gems they were carrying in addition to 100 gold.
 
 If a camp kills you, the carried gems are lost.
 
-Cassi and Issac die together, awarding the killer 50 gold, and all the gems that both of them were carrying.
+Cassi and Issac die together, awarding the killer 100 gold, and all the gems that both of them were carrying.
 
 ### Recalling
 
@@ -399,9 +401,9 @@ Target / range: Enemy or camp · 4. Walking: Compatible. Cooldown: 8 owner turn 
 
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
-| Health | 700 | 71.25 |
-| Strength | 30 | 3.5 |
-| Focus | 70 | 15 |
+| Health | 600 | 65 |
+| Strength | 30 | 3 |
+| Focus | 70 | 13 |
 
 Attack type: Ranged. Basic attack range: 3 tiles.
 
@@ -423,8 +425,8 @@ Target / range: Ground · 2 tiles. Walking: Compatible. Cooldown: 8 owner turn e
 
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
-| Health | 900 | 95 |
-| Strength | 40 | 4.75 |
+| Health | 900 | 80 |
+| Strength | 40 | 3 |
 | Focus | 100 | 10 |
 
 Attack type: Melee. Basic attack range: 1 tiles.
@@ -456,7 +458,7 @@ Target / range: Self. Walking: Compatible. Cooldown: 8 owner turn ends.
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 1200 | 100 |
-| Strength | 50 | 5 |
+| Strength | 45 | 5 |
 | Focus | 100 | 10 |
 
 Attack type: Melee. Basic attack range: 1 tiles.
@@ -469,7 +471,7 @@ A ranged champion with strong basic attacks, bonus gold and a short dash.
 
 **Vesper Vale**
 
-**Passive:** Vesper Vale gains 20% more gold. A Treasure emblem adds another 20 percentage points, for a combined 40% bonus.
+**Passive:** Vesper Vale gains 33% more gold. A Treasure emblem adds another 20 percentage points, for a combined 53% bonus.
 
 #### Slot 0: Attack reset
 
@@ -488,7 +490,7 @@ Target / range: Ground · 2 tiles. Walking: Compatible. Cooldown: 8 owner turn e
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 900 | 100 |
-| Strength | 45 | 5 |
+| Strength | 50 | 5 |
 | Focus | 100 | 10 |
 
 Attack type: Ranged. Basic attack range: 3 tiles.
@@ -501,7 +503,7 @@ A ranged spellcaster who gains Focus from carried gems, trading safe tributes fo
 
 **Prism**
 
-**Passive:** Prism gains 0.2 Focus per carried gem. Ten carried gems add 2 Focus. Tributing or losing those gems removes that bonus.
+**Passive:** Prism gains 1 Focus per carried gem. Ten carried gems add 10 Focus. Tributing or losing those gems removes that bonus.
 
 #### Slot 0: Damage and stun
 
@@ -519,9 +521,9 @@ Target / range: Ground · 4. Walking: Excludes walking. Cooldown: 8 owner turn e
 
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
-| Health | 700 | 75 |
-| Strength | 35 | 3.5 |
-| Focus | 80 | 10 |
+| Health | 700 | 60 |
+| Strength | 35 | 2.5 |
+| Focus | 80 | 8 |
 
 Attack type: Ranged. Basic attack range: 3 tiles.
 
@@ -550,8 +552,8 @@ Target / range: Ground · 4. Walking: Excludes walking. Cooldown: 8 owner turn e
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 750 | 75 |
-| Strength | 35 | 3.5 |
-| Focus | 100 | 10 |
+| Strength | 30 | 3.5 |
+| Focus | 85 | 9 |
 
 Attack type: Ranged. Basic attack range: 3 tiles.
 
@@ -582,7 +584,7 @@ Target / range: Ground · 2 tiles. Walking: Compatible. Cooldown: 8 owner turn e
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 800 | 100 |
-| Strength | 70 | 5 |
+| Strength | 70 | 6 |
 | Focus | 100 | 10 |
 
 Attack type: Melee. Basic attack range: 1 tiles.
@@ -595,7 +597,7 @@ A melee champion immune to stuns, with a stunning enhanced attack and a ranged d
 
 **Marcella**
 
-**Passive:** Immune to stuns
+**Passive:** Immune to stuns. Gains 2 gold per gem she tributes.
 
 #### Slot 0: Enhanced attack reset
 
@@ -615,7 +617,7 @@ Target / range: Enemy or camp · 4. Walking: Excludes walking. Cooldown: 8 owner
 | --- | --- | --- |
 | Health | 1200 | 100 |
 | Strength | 45 | 5 |
-| Focus | 50 | 10 |
+| Focus | 60 | 15 |
 
 Attack type: Melee. Basic attack range: 1 tiles.
 
@@ -637,7 +639,7 @@ Target / range: Self. Walking: Compatible. Cooldown: 8 owner turn ends.
 
 #### Slot 1: Damage and stun
 
-2.2 × Focus damage and a one-round stun.
+1.4 × Focus damage and a one-round stun.
 
 Target / range: Enemy or camp · 4. Walking: Excludes walking. Cooldown: 8 owner turn ends.
 
@@ -646,7 +648,7 @@ Target / range: Enemy or camp · 4. Walking: Excludes walking. Cooldown: 8 owner
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 750 | 75 |
-| Strength | 35 | 5 |
+| Strength | 45 | 5 |
 | Focus | 100 | 10 |
 
 Attack type: Ranged. Basic attack range: 3 tiles.
@@ -676,8 +678,8 @@ Target / range: Self. Walking: Compatible. Cooldown: 8 owner turn ends.
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 700 | 50 |
-| Strength | 45 | 3 |
-| Focus | 105 | 5 |
+| Strength | 55 | 3 |
+| Focus | 120 | 5 |
 
 Attack type: Ranged. Basic attack range: 3 tiles.
 
@@ -708,8 +710,8 @@ Target / range: Ground · 2 tiles. Walking: Compatible. Cooldown: 8 owner turn e
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 900 | 100 |
-| Strength | 40 | 5 |
-| Focus | 100 | 10 |
+| Strength | 35 | 5 |
+| Focus | 100 | 9 |
 
 Attack type: Melee. Basic attack range: 1 tiles.
 
@@ -740,7 +742,7 @@ Target / range: Self. Walking: Compatible. Cooldown: 8 owner turn ends.
 | Stat | Base | Growth per matching shard |
 | --- | --- | --- |
 | Health | 1000 | 100 |
-| Strength | 50 | 5 |
+| Strength | 40 | 5 |
 | Focus | 100 | 10 |
 
 Attack type: Melee. Basic attack range: 1 tiles.

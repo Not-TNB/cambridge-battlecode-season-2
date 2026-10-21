@@ -67,6 +67,8 @@ pub fn for_champion(champion: ChampionType) -> Box<dyn ChampionAi> {
         ChampionType::Stellar => Box::new(stellar::Stellar::default()),
         ChampionType::Tavi => Box::new(tavi::Tavi::default()),
         ChampionType::Varg => Box::new(varg::Varg::default()),
+        // Heart of Ruin (new in 3.0): a melee bruiser with a self-shield, played like Varg here.
+        ChampionType::HeartOfRuin => Box::new(varg::Varg::default()),
         ChampionType::Vendetta => Box::new(vendetta::Vendetta::default()),
         ChampionType::VesperVale => Box::new(vesper_vale::VesperVale::default()),
         ChampionType::Willow => Box::new(willow::Willow::default()),

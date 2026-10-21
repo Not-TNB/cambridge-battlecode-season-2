@@ -18,6 +18,8 @@ pub struct Bot {
     was_recalling: bool,
     last_at_spawn_round: u32,
     ai: Option<Box<dyn ChampionAi>>,
+    // bot-v2's turn, for followers playing on their own (squad::follower_free).
+    v2: crate::v2::bot::Bot,
 }
 
 impl Bot {
@@ -71,6 +73,10 @@ impl Bot {
     }
 
     pub fn play_turn(&mut self) -> Result<()> {
+        crate::squad::hand_over_shared_memory()?;
+        if crate::squad::follower_free()? {
+            return self.v2.play_turn();
+        }
         if self.ai.is_none() {
             self.ai = Some(champions::for_champion(me()?.champion_name()?));
         }
@@ -89,6 +95,12 @@ impl Bot {
                 let _ = common::ward_hidden_spots();
             }
             common::checkpoint("turn-ward");
+            // Walking steps to our spawn (once per champion, ~10-30k fuel), for walking home and
+            // the pull towards it when fleeing.
+            if cambc::fuel_remaining()? >= SPARE_FUEL {
+                common::prepare_spawn_steps();
+            }
+            common::checkpoint("turn-spawn-steps");
         }
         if common::TRACE {
             let me = me()?;
