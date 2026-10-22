@@ -58,8 +58,32 @@ pub fn remember_enemies() -> Result<()> {
         });
         s.extend(seen);
     });
+    // Awake camps close enough to matter, for CAMP_MEMORY_ROUNDS.
+    if CAMP_MEMORY_ROUNDS > 0 {
+        let here = me()?.position()?;
+        let mut awake = Vec::new();
+        for camp in &super::world::sight()?.camps {
+            let at = camp.spawn_position();
+            if distance(at, here) <= CAMP_NOTE_TILES && camp.is_awake().unwrap_or(false) {
+                awake.push(Threat {
+                    origin: at,
+                    range: camp.attack_range()?,
+                    damage: camp.strength()?,
+                    speed: 0,
+                    shield: None,
+                });
+            }
+        }
+        CAMPS_SEEN.with(|seen| {
+            let mut seen = seen.borrow_mut();
+            seen.retain(|(t, _)| !awake.iter().any(|a| a.origin == t.origin));
+            seen.extend(awake.into_iter().map(|t| (t, round)));
+        });
+    }
     Ok(())
 }
+
+const CAMP_NOTE_TILES: i32 = 7;
 
 // Everything we can see that could hurt us, plus enemies seen in the last SIGHTING_ROUNDS rounds
 // that are now out of sight.
@@ -71,6 +95,7 @@ pub fn known_threats() -> Result<Threats> {
         t.shield = None;
     }
     let round = cambc::round_number()?;
+    remember_camps(&mut threats, round)?;
     SIGHTINGS.with(|s| {
         for old in s.borrow().iter().filter(|old| old.round < round) {
             let age = (round - old.round) as i32;
@@ -86,6 +111,47 @@ pub fn known_threats() -> Result<Threats> {
         }
     });
     Ok(threats)
+}
+
+// Awake camps seen in the last CAMP_MEMORY_ROUNDS rounds stay threats while their tile is out of
+// sight. Camps see (and hit) through bushes but we don't see into them: a low-health champion
+// next to a bush with an elk in it saw no camp, stepped into the bush to recall (BUSH_RECALL_TILES),
+// saw the elk from inside and stepped back out, and so on until the elk killed it. 77% of our
+// deaths to camps were on the low-health retreat. 0: off.
+// 2026-10-21, 140 games: 64 against off, and no fewer deaths to camps (3.5 a game against 3.4):
+// the bush back-and-forth wasn't what killed them. Off.
+pub const CAMP_MEMORY_ROUNDS: u32 = 0;
+
+thread_local! {
+    static CAMPS_SEEN: std::cell::RefCell<Vec<(Threat, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn remember_camps(threats: &mut Threats, round: u32) -> Result<()> {
+    if CAMP_MEMORY_ROUNDS == 0 {
+        return Ok(());
+    }
+    let visible = super::world::sight()?.visible.clone();
+    CAMPS_SEEN.with(|seen| -> Result<()> {
+        let mut seen = seen.borrow_mut();
+        // A camp in sight now is scanned afresh (dead or asleep: no threat).
+        let mut kept = Vec::new();
+        for (t, r) in seen.drain(..) {
+            if round <= r + CAMP_MEMORY_ROUNDS && !visible.is_set(t.origin)? {
+                kept.push((t, r));
+            }
+        }
+        *seen = kept;
+        for (t, _) in seen.iter() {
+            threats.0.push(t.clone());
+        }
+        // Camps are the threats that don't walk.
+        for t in threats.0.iter().filter(|t| t.speed == 0) {
+            if !seen.iter().any(|(s, _)| s.origin == t.origin) {
+                seen.push((t.clone(), round));
+            }
+        }
+        Ok(())
+    })
 }
 
 // No known threat can reach `tile` during the next `turns` turns.
@@ -139,21 +205,37 @@ pub const LOW_HP_IDLE_RECALL: f32 = 0.35;
 pub const ESCAPE_AWARE_RECALL: bool = true;
 const ESCAPE_EXTRA_HITS: f32 = 1.0;
 
+// The escape rule above at any health, not only below LOW_HP_RECALL: against two elk (120 a round)
+// or a monolith (200) walking out of range can cost more than 35% of our health, and we only began
+// the retreat at 22% on average, so 706 of 878 deaths to camps (210 traced games) came on the
+// retreat, the camps' hits alone doing it. Only with no enemy champion in sight (fights keep the
+// old rule). Off: below LOW_HP_RECALL only.
+// 2026-10-21, 140 games: 71 against off; deaths to camps 2.6 a game against 3.2 (-19%), gems
+// collected -2% (fights left earlier).
+pub const ESCAPE_ANY_HP: bool = true;
+// No camp reaches further than this (monolith 5); camps further away aren't queried.
+const MAX_CAMP_RANGE: i32 = 5;
+
 pub fn low_hp_recall() -> Result<bool> {
     let me = me()?;
     let (hp, max) = (me.health()?, me.max_health()?);
-    if hp >= max * LOW_HP_RECALL {
+    let low = hp < max * LOW_HP_RECALL;
+    if !low && !ESCAPE_ANY_HP {
         return Ok(false);
     }
     let sight = super::world::sight()?;
     if !sight.enemies.is_empty() {
-        return Ok(true);
+        return Ok(low);
     }
     let here = me.position()?;
     let mut per_round = 0.0;
     let mut escape_steps = 0;
     for camp in &sight.camps {
-        let (gap, range) = (distance(camp.spawn_position(), here), camp.attack_range()?);
+        let gap = distance(camp.spawn_position(), here);
+        if gap > MAX_CAMP_RANGE {
+            continue;
+        }
+        let range = camp.attack_range()?;
         if camp.is_awake().unwrap_or(true) && gap <= range {
             per_round += camp.strength()?;
             escape_steps = escape_steps.max(range + 1 - gap);
@@ -164,11 +246,79 @@ pub fn low_hp_recall() -> Result<bool> {
     } else {
         LOW_HP_CAMP_HITS
     };
+    if !low {
+        return Ok(per_round > 0.0 && hp <= (escape_steps as f32 + ESCAPE_EXTRA_HITS) * per_round);
+    }
     Ok(if per_round > 0.0 {
         hp <= hits * per_round
     } else {
         hp < max * LOW_HP_IDLE_RECALL
     })
+}
+
+// Leaving camps' range comes first on a retreat: the walk to tiles safe for the whole recall
+// (leaning home) often ran along a camp's range instead of out of it (ranges are Chebyshev, so a
+// sideways step stays as deep): of the steps on retreats that ended in a death to a camp, 34% got
+// further out of range, 42% stayed as deep and 20% went deeper. While awake camps hit us and no
+// enemy champion is in sight, dash (if ready) and step to the tile with the least exposure (each
+// covering camp's strength times the steps still in its range), leaning home on ties. Off: walk to
+// the safe tiles directly.
+// 2026-10-21, 140 games: 67 against off, deaths to camps -5% only (3.05 against 3.21). Off.
+pub const CAMP_ESCAPE_FIRST: bool = false;
+
+fn escape_camps() -> Result<bool> {
+    let me = me()?;
+    let sight = super::world::sight()?;
+    if !CAMP_ESCAPE_FIRST || !me.can_move()? || !sight.enemies.is_empty() {
+        return Ok(false);
+    }
+    let here = me.position()?;
+    let mut camps = Vec::new();
+    for camp in &sight.camps {
+        // Within a range and two steps of us: any we could step into.
+        if distance(camp.spawn_position(), here) <= MAX_CAMP_RANGE + 2 && camp.is_awake().unwrap_or(false) {
+            camps.push((camp.spawn_position(), camp.attack_range()?, camp.strength()?));
+        }
+    }
+    let exposure = |tile: Vec2| -> f32 {
+        camps
+            .iter()
+            .map(|&(c, r, s)| s * (r + 1 - distance(c, tile)).max(0) as f32)
+            .sum()
+    };
+    let now = exposure(here);
+    if now <= 0.0 {
+        return Ok(false);
+    }
+    let pull = |tile: Vec2| home_pull(tile).unwrap_or(0.0) * 0.01;
+    let blocked = super::world::blocked_tiles()?;
+    let mut acted = false;
+    if let Some(dash) = super::movement::ready_dash()? {
+        if super::movement::dash_to_best(dash, &blocked, |t| Ok(exposure(t) + pull(t)))? {
+            trace("retreat-camp-dash");
+            acted = true;
+        }
+    }
+    if !me.can_move()? {
+        return Ok(acted);
+    }
+    let from = me.position()?;
+    let blocked = super::world::blocked_tiles()?;
+    let mut best = (exposure(from) + pull(from), from);
+    for tile in blocked
+        .reachable_tiles(from, me.base_stats()?.base_move_speed as u16)?
+        .positions()?
+    {
+        let k = exposure(tile) + pull(tile);
+        if k < best.0 {
+            best = (k, tile);
+        }
+    }
+    if best.1 != from && exposure(best.1) < exposure(from) && super::movement::step_to(best.1) {
+        trace("retreat-camp-step");
+        acted = true;
+    }
+    Ok(acted)
 }
 
 // Recall where it's safe for the whole channel; otherwise walk (dashing, leaning towards base)
@@ -228,6 +378,9 @@ pub fn retreat_and_recall() -> Result<()> {
     let me = me()?;
     strike_while_retreating()?;
     super::trace::checkpoint("recall-strike");
+    if escape_camps()? {
+        return Ok(());
+    }
     // Fix 1: close to base, walking there is no slower than the 5-turn recall, and nothing can
     // interrupt it (32% of recalls started within 5 steps of base).
     if WALK_HOME_STEPS > 0

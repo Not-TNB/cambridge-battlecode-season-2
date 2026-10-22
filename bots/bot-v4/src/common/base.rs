@@ -277,6 +277,11 @@ pub fn bank_gems() -> Result<()> {
             goals = locked_goals;
         }
     }
+    // We tribute from a free tile, never a camp's: move_towards_closest keeps camp tiles as goals
+    // (farming walks up to camps), so on 01shortcut, where the altar shares a room with the
+    // monolith's gem clusters, the cluster next to us was the "nearest goal" and we stood beside it
+    // for the rest of the game, two tiles from the altar (1,800 turns, 28 gems never tributed).
+    goals.intersect_assign(&cambc::vision::camp_tiles()?.complement()?)?;
     checkpoint("bank-goals");
     move_towards_closest(goals)?;
     checkpoint("bank-move");

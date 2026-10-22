@@ -1,7 +1,7 @@
 // Walking and dashing towards goals, and walking distances (WalkGrid).
 use super::fight::fightable_enemies;
 use super::me;
-use super::trace::checkpoint;
+use super::trace::{checkpoint, trace};
 use super::world::{blocked_tiles, forget_sight, tiles_around};
 use cambc::{Ability, Bitboard, DistanceField, Result, Vec2};
 
@@ -193,6 +193,11 @@ pub fn move_towards_closest_with_pull(
     checkpoint("path-blocked");
     goals.intersect_assign(&blocked.complement()?.union(&cambc::vision::camp_tiles()?)?)?;
     if goals.is_empty()? {
+        // Every goal is a tile we can't stand on: as unreachable as a sealed one (the farm target
+        // is then skipped). Not flagging it left a champion standing still with its goals all
+        // blocked (Vendetta, 117 turns on 01concentrated-wealth).
+        trace("goals-all-blocked");
+        GOALS_UNREACHABLE.with(|u| u.set(true));
         return Ok(false);
     }
 

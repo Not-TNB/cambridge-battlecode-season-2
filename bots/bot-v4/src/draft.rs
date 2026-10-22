@@ -91,6 +91,77 @@ fn calc_balance() -> Result<[f64; CLASS_COUNT]> {
     Ok(bias)
 }
 
+// Teams of SMALL_TEAM_MAX champions or fewer draft by their own weights instead (0: off). From 720
+// three-champion teams in 360 games with uniformly random drafts on the six 3-champion maps
+// (2026-10-22), team win rates: with Vesper 77%, Marcella 58%, Tavi 54%, Ryth 53%, Ren 52%,
+// Vendetta 49%, Varg 49%, Heart of Ruin 48%, Prism 44%, Stellar 43%, Cassi & Issac 39%, Willow 35%;
+// AD carries 0/1/2 = 38/65/68%; with a healer 35%; two AP 34%; AD + bruiser + tank 82%, AD + AP +
+// tank 81%, AD + bruiser + bruiser 78%. Four-champion teams (960 teams on the eight 4-champion
+// maps): Vesper 68%, Marcella 56%, Tavi 53% ... Vendetta 46%, Cassi & Issac 38%; AD 0/1/2 =
+// 35/56/73%; two assassins 38%; Willow neutral (50%), no frontline no worse. On the ladder a
+// 4-champion Ren/Willow/Cassi/Vendetta team (no AD) lost 00gemfight twice with 21-22 deaths.
+pub const SMALL_TEAM_MAX: usize = 4;
+
+// One AD carry first (Vesper over Tavi; with four, a second one is welcome), at most one AP and one
+// assassin, no Cassi & Issac; with three also a frontline (tank or bruiser) by the last pick and no
+// Willow. Weights roughly follow the win rates above.
+fn small_team_weight(p: ChampionDraft, mine: &[ChampionDraft], left: usize, size: usize) -> f64 {
+    use ChampionDraft as D;
+    let base = if size <= 3 {
+        match p {
+            D::VesperVale => 1.0,
+            D::Marcella => 0.6,
+            D::Ryth => 0.5,
+            D::Tavi => 0.35,
+            D::Ren => 0.3,
+            D::Vendetta => 0.2,
+            D::Varg | D::HeartOfRuin => 0.15,
+            D::Prism | D::Stellar => 0.1,
+            D::CassiAndIssac | D::Willow => 0.0,
+        }
+    } else {
+        match p {
+            D::VesperVale => 1.0,
+            D::Marcella | D::Tavi => 0.5,
+            D::Prism => 0.4,
+            D::Willow => 0.3,
+            D::HeartOfRuin | D::Ren | D::Ryth => 0.25,
+            D::Stellar | D::Varg => 0.2,
+            D::Vendetta => 0.15,
+            D::CassiAndIssac => 0.0,
+        }
+    };
+    let class = draft_class(p);
+    let count = |k: ClassKind| mine.iter().filter(|&&m| draft_class(m) == k).count();
+    let frontline = |k: ClassKind| matches!(k, ClassKind::Tank | ClassKind::Bruiser);
+    let has_frontline = mine.iter().any(|&m| frontline(draft_class(m)));
+    let mut w = base;
+    match class {
+        ClassKind::DpsAd => {
+            w *= match (count(ClassKind::DpsAd), size <= 3) {
+                (0, _) => 5.0,
+                (1, true) => 0.3,
+                (1, false) => 1.5,
+                _ => 0.2,
+            }
+        }
+        ClassKind::DpsAp | ClassKind::Assassin if count(class) > 0 => w = 0.0,
+        _ => {}
+    }
+    if left == 1 {
+        // The last pick fills what's missing: an AD carry first (teams without one won 35-38%), then
+        // with three a frontline (47% without).
+        if count(ClassKind::DpsAd) == 0 {
+            if class != ClassKind::DpsAd {
+                w = 0.0;
+            }
+        } else if size <= 3 && !has_frontline && !frontline(class) {
+            w = 0.0;
+        }
+    }
+    w
+}
+
 fn weighted_pick(biases: &[f64]) -> usize {
     let total: f64 = biases.iter().sum();
 
@@ -128,8 +199,19 @@ pub fn play() -> Result<()> {
         })
         .collect();
 
+    let mut weights = weights;
+    let size = cambc::draft::team_size()?;
+    if size <= SMALL_TEAM_MAX {
+        let left = size.saturating_sub(ally_draft.len());
+        let small: Vec<f64> = picks.iter().map(|&p| small_team_weight(p, &ally_draft, left, size)).collect();
+        if small.iter().sum::<f64>() > 0.0 {
+            weights = small;
+        }
+    }
+
     // No debug print of the weights here: formatting floats costs ~30k fuel, and draft turns after
     // the first get only ~100k (running out means the game picks for us at random).
+    crate::mix_draft_into_random();
     let choice = picks[weighted_pick(&weights)];
     println!("Picked {:?}", choice);
 

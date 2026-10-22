@@ -13,6 +13,13 @@ use cambc::{Bitboard, Champion, ChampionType, DistanceField, Result, Vec2};
 // dash in. Against melee targets, dash whenever it gets us closer.
 pub const DASH_CHASE: bool = true;
 
+// With no ally within ALONE_ALLY_TILES, chase only an enemy the duel says we kill this many turns
+// before it would kill us, not just before: a lone Marcella chased, traded blows until the
+// low-health retreat and died on the way out, with nobody to peel. 0: off (winnable is enough).
+// 2026-10-21, 140 games: 76 against off (deaths 15.9 against 17.9 a game, kills 14.0 against 11.9).
+pub const ALONE_CHASE_MARGIN: u32 = 3;
+const ALONE_ALLY_TILES: i32 = 6;
+
 pub(super) fn dash_at_chase_target(enemies: &[Champion]) -> Result<bool> {
     if !DASH_CHASE {
         return Ok(false);
@@ -241,6 +248,14 @@ pub(super) fn choose_chase_step(enemies: &[Champion]) -> Result<Option<Vec2>> {
     let (threats, allies, from_me) = (&view.threats, &view.allies, &view.from_me);
     let current = chase_target().map(|t| t.name);
     let mut current_visible = false;
+    let alone = ALONE_CHASE_MARGIN > 0 && {
+        let here = me()?.position()?;
+        let mut near = false;
+        for ally in &super::world::sight()?.allies {
+            near |= ally.position().is_ok_and(|p| distance(p, here) <= ALONE_ALLY_TILES);
+        }
+        !near
+    };
     let mut best: Option<(ChampionType, Vec2, Option<Vec2>, u32, f32)> = None;
     for enemy in enemies {
         let Some(duel) = plan_duel(enemy, threats, allies, from_me)? else {
@@ -255,7 +270,10 @@ pub(super) fn choose_chase_step(enemies: &[Champion]) -> Result<Option<Vec2>> {
             && duel.hp_after_walk > 0.0
             && duel.die_turns >= ENGAGE_MIN_SURVIVE_TURNS;
         let winnable = duel.winnable
-            && (!backup || duel.die_turns >= duel.kill_turns.saturating_add(CHASE_ESCAPE_TURNS));
+            && (!backup || duel.die_turns >= duel.kill_turns.saturating_add(CHASE_ESCAPE_TURNS))
+            && (ALONE_CHASE_MARGIN == 0
+                || !alone
+                || duel.die_turns >= duel.kill_turns.saturating_add(ALONE_CHASE_MARGIN));
         if !winnable && !close {
             if backup && duel.winnable {
                 trace("chase-backup");

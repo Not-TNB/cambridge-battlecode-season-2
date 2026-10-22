@@ -1,7 +1,8 @@
 // Choosing where to farm: phase filter, respawn memory, avoiding enemies and the farm plan.
 use super::attack::cast_abilities_on_camps;
 use super::camps::{
-    ally_on_group, attack_camp_in_range, carry_covers, FUNNEL_HEALERS, TANK_FUNNEL,
+    ally_on_group, attack_camp_in_range, carry_covers, funnels, funnels_to_gold_carry, gold_carry,
+    FUNNEL_MELEE,
 };
 use super::duel::{cached_fight_view, fight_view, plan_duel};
 use super::me;
@@ -725,9 +726,9 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     checkpoint("plan-key");
     let statics = farm_statics()?;
     let class = crate::constants::class_of(me()?.champion_name()?);
-    let is_tank = TANK_FUNNEL
-        && (class == crate::constants::ClassKind::Tank
-            || (FUNNEL_HEALERS && class == crate::constants::ClassKind::Healer));
+    let is_tank = funnels(class);
+    let is_melee_funnel = funnels_to_gold_carry(class);
+    let is_gold_carry = FUNNEL_MELEE && gold_carry()?;
     let sight = sight()?;
     let groups = camp_groups()?;
     // Enemy reach: (position, attack range + FARM_ENEMY_TURNS turns of walking).
@@ -1024,7 +1025,10 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                     dropped.push(index);
                     continue;
                 }
-                cambc::CampGroupState::RewardAvailable if is_tank && carry_covers(group)? => {
+                cambc::CampGroupState::RewardAvailable
+                    if (is_tank && carry_covers(group, false)?)
+                        || (is_melee_funnel && carry_covers(group, true)?) =>
+                {
                     if previous_group == Some(index) {
                         previous_target_reason = Some("ally-carry-captures-reward");
                     }
@@ -1033,7 +1037,7 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                 }
                 // An ally already on the capture region is collecting this reward; don't path to
                 // the occupied capture tile or compete for the split.
-                cambc::CampGroupState::RewardAvailable if ally_on_group(group)? => {
+                cambc::CampGroupState::RewardAvailable if ally_on_group(group, is_gold_carry)? => {
                     if previous_group == Some(index) {
                         previous_target_reason = Some("ally-captures-reward");
                     }
@@ -1693,6 +1697,7 @@ const STALE_PLAN_ROUNDS: u32 = 10;
 pub fn farm_camps() -> Result<()> {
     checkpoint("farm-start");
     super::claims::farmed();
+    super::rally::check_unanswered()?;
     let attacked = attack_camp_in_range()?;
     checkpoint("farm-attack-check");
     if attacked {

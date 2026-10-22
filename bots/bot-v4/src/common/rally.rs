@@ -240,8 +240,69 @@ pub fn call(index: usize) -> Result<()> {
         return Ok(());
     }
     super::trace::trace("rally-call");
-    write([index as u8 + 1, cambc::round_number()? as u8])?;
+    let round = cambc::round_number()?;
+    write([index as u8 + 1, round as u8])?;
+    OUR_RALLY.with(|o| o.set(Some((index, round))));
     join()
+}
+
+// A rally nobody answers: when ours runs out (RALLY_ROUNDS) with no other ally joined (heading
+// there) and none within ANSWER_TILES of the group, we give the group up for
+// UNANSWERED_RALLY_ROUNDS (judged lost, no new rally on it) and farm elsewhere. We called again the
+// moment it ran out, so a champion at a group too far from the others waited there all game: Ren
+// stood beside 01concentrated-wealth's corner elk for 210 rounds, calling a rally every 20. 0: off.
+// 2026-10-21, 140 games: the first version (no joined check, and it ended the rally for allies
+// already on their way) 59 against off.
+pub const UNANSWERED_RALLY_ROUNDS: u32 = 40;
+const ANSWER_TILES: i32 = 6;
+
+thread_local! {
+    static OUR_RALLY: Cell<Option<(usize, u32)>> = const { Cell::new(None) };
+}
+
+// Called every acting turn (farm_plan): give up our rally if it went unanswered.
+pub fn check_unanswered() -> Result<()> {
+    if UNANSWERED_RALLY_ROUNDS == 0 {
+        return Ok(());
+    }
+    let Some((index, called)) = OUR_RALLY.with(|o| o.get()) else {
+        return Ok(());
+    };
+    let round = cambc::round_number()?;
+    if active()? != Some(index) && round < called + RALLY_ROUNDS {
+        OUR_RALLY.with(|o| o.set(None)); // ended early: cleared, or someone else's now
+        return Ok(());
+    }
+    if round + 1 < called + RALLY_ROUNDS {
+        return Ok(());
+    }
+    OUR_RALLY.with(|o| o.set(None));
+    let Some(group) = super::world::camp_groups()?.get(index) else {
+        return Ok(());
+    };
+    let mut joined = [0u8];
+    cambc::shared_memory().read(PARTICIPANTS_OFFSET, &mut joined)?;
+    let ours = slot_of(super::me()?.champion_name()?).map_or(0, |s| 1u8 << s);
+    let mut answered = joined[0] & !ours != 0;
+    for ally in &super::world::sight()?.allies {
+        let p = ally.position()?;
+        if group.camps().iter().any(|c| super::world::distance(c.spawn_position(), p) <= ANSWER_TILES) {
+            answered = true;
+            break;
+        }
+    }
+    if !answered {
+        super::trace::trace("rally-unanswered");
+        super::collect::extend_loss(index, round + UNANSWERED_RALLY_ROUNDS);
+        CHECKED_UNTIL.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() <= index {
+                c.resize(index + 1, 0);
+            }
+            c[index] = c[index].max(round + UNANSWERED_RALLY_ROUNDS);
+        });
+    }
+    Ok(())
 }
 
 // Groups found not worth a rally (we'd lose even with RALLY_MAX_HELPERS more allies) aren't

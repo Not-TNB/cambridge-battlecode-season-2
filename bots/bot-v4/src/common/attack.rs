@@ -1,5 +1,5 @@
 // Basic attacks and casting damaging abilities on enemies and camps.
-use super::camps::attack_camp_in_range;
+use super::camps::{attack_camp_in_range, CampFocus};
 use super::fight::fightable_enemies;
 use super::me;
 use super::world::{distance, forget_sight, sight};
@@ -48,6 +48,9 @@ pub(super) fn cast_abilities_on_camps(moved: bool) -> Result<bool> {
     if !me.can_cast()? || !fightable_enemies()?.is_empty() {
         return Ok(false);
     }
+    // Same camps and order as basic attacks (camps::CampFocus): no spell into a sleeping group we
+    // aren't clearing.
+    let focus = CampFocus::new()?;
     let mut camps = Vec::new();
     for camp in &sight.camps {
         // Follow-only escorts leave sleeping camps alone (collect::may_hit_camp).
@@ -55,10 +58,15 @@ pub(super) fn cast_abilities_on_camps(moved: bool) -> Result<bool> {
             if !super::collect::may_hit_camp(camp, index)? {
                 continue;
             }
+            match focus.rank(index) {
+                Some(rank) => camps.push(((rank, camp.health()?), camp)),
+                None => continue,
+            }
+        } else {
+            camps.push(((0, camp.health()?), camp));
         }
-        camps.push((camp.health()?, camp));
     }
-    camps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    camps.sort_by(|a, b| a.0 .0.cmp(&b.0 .0).then(a.0 .1.total_cmp(&b.0 .1)));
     for ability in me.abilities() {
         if !ability_ready(ability, me)? || (!is_damaging(ability) && !ability.is_attack_reset()) {
             continue;
@@ -70,6 +78,10 @@ pub(super) fn cast_abilities_on_camps(moved: bool) -> Result<bool> {
             continue;
         }
         for &(_, camp) in &camps {
+            if ability.is_aoe_damage() && focus.splash_wakes(camp.spawn_position())? {
+                continue;
+            }
+            super::camps::trace_wake(camp);
             if cast_at_camp(ability, camp)? {
                 return Ok(blocks_walking);
             }

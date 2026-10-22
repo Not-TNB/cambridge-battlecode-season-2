@@ -224,6 +224,11 @@ fn step_out_of_camps(enemies: &[Champion]) -> Result<bool> {
     };
     let now = hits(here);
     if now == 0 {
+        cambc::debug_block! {
+            if camps.iter().any(|&(c, r, _)| distance(c, here) <= r) {
+                trace("camp-shielded");
+            }
+        }
         return Ok(false);
     }
     let range = me.attack_range()?;
@@ -251,6 +256,7 @@ fn step_out_of_camps(enemies: &[Champion]) -> Result<bool> {
         return Ok(false);
     };
     if count >= now || !super::movement::step_to(tile) {
+        trace("no-camp-exit");
         return Ok(false);
     }
     trace(if count == 0 { "fight-step-out-of-camps" } else { "fight-leave-camp" });

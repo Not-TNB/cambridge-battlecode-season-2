@@ -169,7 +169,10 @@ pub fn nearby_camp_gold(tiles: i32) -> Result<u32> {
             continue;
         }
         counted.push(index);
-        if !crate::regions::reachable_for_me(index)? || camp_fight_winnable(index)? == Some(false) {
+        // Losses judged already (recently_lost, no host calls), not camp_fight_winnable: judging
+        // every group in reach here cost up to 52k fuel on 00lanes, leaving none to walk, so a
+        // champion that wanted home but saw gold near stood still for 118 turns.
+        if !crate::regions::reachable_for_me(index)? || recently_lost(index, cambc::round_number()?) {
             continue;
         }
         gold += camp_groups()?[index].gold_value();
@@ -984,7 +987,7 @@ pub fn grab_reward_before_recall() -> Result<bool> {
         if !near || !seen || sight.camps.iter().any(|c| group_at(c.spawn_position()).ok().flatten() == Some(index)) {
             continue;
         }
-        if !matches!(group.state(), Ok(cambc::CampGroupState::RewardAvailable)) || super::camps::ally_on_group(group)? {
+        if !matches!(group.state(), Ok(cambc::CampGroupState::RewardAvailable)) || super::camps::ally_on_group(group, false)? {
             continue;
         }
         if group.camps().iter().any(|c| c.spawn_position() == here) {
