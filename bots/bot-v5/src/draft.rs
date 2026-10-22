@@ -27,7 +27,7 @@ fn calc_balance() -> Result<[f64; CLASS_COUNT]> {
     for (class, weight) in CLASS_WEIGHTS {
         bias[class as usize] *= weight;
     }
-    if theirs.len() == 0 {
+    if theirs.is_empty() {
         bias[ClassKind::Bruiser as usize] *= 20.0;
     }
 
@@ -249,7 +249,10 @@ pub fn play() -> Result<()> {
     let size = cambc::draft::team_size()?;
     if size <= SMALL_TEAM_MAX {
         let left = size.saturating_sub(ally_draft.len());
-        let small: Vec<f64> = picks.iter().map(|&p| small_team_weight(p, &ally_draft, left, size)).collect();
+        let small: Vec<f64> = picks
+            .iter()
+            .map(|&p| small_team_weight(p, &ally_draft, left, size))
+            .collect();
         if small.iter().sum::<f64>() > 0.0 {
             weights = small;
         }

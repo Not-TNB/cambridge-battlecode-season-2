@@ -66,18 +66,18 @@ pub trait ChampionAi {
 // Build the per-champion AI for the champion this program instance controls.
 pub fn for_champion(champion: ChampionType) -> Box<dyn ChampionAi> {
     match champion {
-        ChampionType::Cassi => Box::new(cassi::Cassi::default()),
-        ChampionType::Issac => Box::new(issac::Issac::default()),
-        ChampionType::Marcella => Box::new(marcella::Marcella::default()),
-        ChampionType::Prism => Box::new(prism::Prism::default()),
-        ChampionType::Ren => Box::new(ren::Ren::default()),
-        ChampionType::Ryth => Box::new(ryth::Ryth::default()),
-        ChampionType::Stellar => Box::new(stellar::Stellar::default()),
-        ChampionType::Tavi => Box::new(tavi::Tavi::default()),
+        ChampionType::Cassi => Box::new(cassi::Cassi),
+        ChampionType::Issac => Box::new(issac::Issac),
+        ChampionType::Marcella => Box::new(marcella::Marcella),
+        ChampionType::Prism => Box::new(prism::Prism),
+        ChampionType::Ren => Box::new(ren::Ren),
+        ChampionType::Ryth => Box::new(ryth::Ryth),
+        ChampionType::Stellar => Box::new(stellar::Stellar),
+        ChampionType::Tavi => Box::new(tavi::Tavi),
         ChampionType::Varg => Box::new(varg::Varg::default()),
-        ChampionType::Vendetta => Box::new(vendetta::Vendetta::default()),
-        ChampionType::VesperVale => Box::new(vesper_vale::VesperVale::default()),
-        ChampionType::Willow => Box::new(willow::Willow::default()),
+        ChampionType::Vendetta => Box::new(vendetta::Vendetta),
+        ChampionType::VesperVale => Box::new(vesper_vale::VesperVale),
+        ChampionType::Willow => Box::new(willow::Willow),
         ChampionType::HeartOfRuin => Box::new(heart_of_ruin::HeartOfRuin::default()),
     }
 }

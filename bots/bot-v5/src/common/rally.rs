@@ -118,7 +118,10 @@ pub fn full() -> Result<bool> {
 }
 
 fn slot_of(champion: cambc::ChampionType) -> Option<usize> {
-    crate::opening::team().iter().position(|&c| c == champion).filter(|&s| s < 8)
+    crate::opening::team()
+        .iter()
+        .position(|&c| c == champion)
+        .filter(|&s| s < 8)
 }
 
 // Mark us as having joined the active rally (we're heading to it this turn).
@@ -202,7 +205,8 @@ pub fn max_helpers(group: &cambc::CampGroup, round: u32) -> Result<Option<usize>
         return Ok(Some(MONOLITH_MAX_HELPERS));
     }
     // The Group opening (opening.rs) rallies for elk on any map.
-    if ELK_RALLY && has(cambc::CampType::Elk) && (map_has_elk()? || crate::opening::elk_rallies()?) {
+    if ELK_RALLY && has(cambc::CampType::Elk) && (map_has_elk()? || crate::opening::elk_rallies()?)
+    {
         return Ok(Some(RALLY_MAX_HELPERS));
     }
     if ANY_GROUP_RALLY
@@ -220,9 +224,11 @@ pub fn active() -> Result<Option<usize>> {
 
 // Whether group `index` has a monolith.
 pub fn is_monolith(index: usize) -> Result<bool> {
-    Ok(super::world::camp_groups()?
-        .get(index)
-        .is_some_and(|g| g.camps().iter().any(|c| c.kind() == cambc::CampType::Monolith)))
+    Ok(super::world::camp_groups()?.get(index).is_some_and(|g| {
+        g.camps()
+            .iter()
+            .any(|c| c.kind() == cambc::CampType::Monolith)
+    }))
 }
 
 // Whether the active rally is a help call (a fight in progress).
@@ -341,7 +347,11 @@ pub fn check_unanswered() -> Result<()> {
     let mut answered = joined[0] & !ours != 0;
     for ally in &super::world::sight()?.allies {
         let p = ally.position()?;
-        if group.camps().iter().any(|c| super::world::distance(c.spawn_position(), p) <= ANSWER_TILES) {
+        if group
+            .camps()
+            .iter()
+            .any(|c| super::world::distance(c.spawn_position(), p) <= ANSWER_TILES)
+        {
             answered = true;
             break;
         }

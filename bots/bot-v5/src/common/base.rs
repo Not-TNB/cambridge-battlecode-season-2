@@ -96,11 +96,14 @@ const GATE_MARGIN_ROUNDS: u32 = 5;
 pub const GATE_QUEUE: bool = false;
 const GATE_QUEUE_TILES: i32 = 2;
 
+// An altar and the camp tiles (and their groups) next to it that it depends on.
+type AltarAccess = (Vec2, Vec<(Vec2, usize)>);
+
 // Each altar we could ever tribute at, with the camp tiles (and groups) next to it that it depends
 // on: none if a floor tile is next to it. Worked out once.
-fn altar_access() -> Result<&'static [(Vec2, Vec<(Vec2, usize)>)]> {
+fn altar_access() -> Result<&'static [AltarAccess]> {
     thread_local! {
-        static ACCESS: std::cell::OnceCell<&'static [(Vec2, Vec<(Vec2, usize)>)]> =
+        static ACCESS: std::cell::OnceCell<&'static [AltarAccess]> =
             const { std::cell::OnceCell::new() };
     }
     if let Some(access) = ACCESS.with(|a| a.get().copied()) {
@@ -140,7 +143,7 @@ fn altar_access() -> Result<&'static [(Vec2, Vec<(Vec2, usize)>)]> {
     } else {
         access.extend(altars.into_iter().map(|a| (a, Vec::new())));
     }
-    let access: &'static [(Vec2, Vec<(Vec2, usize)>)] = Vec::leak(access);
+    let access: &'static [AltarAccess] = Vec::leak(access);
     ACCESS.with(|a| {
         let _ = a.set(access);
     });
@@ -181,7 +184,9 @@ fn gate_open(altar: Vec2, gates: &[(Vec2, usize)]) -> Result<bool> {
             }
             continue;
         }
-        if super::farm::respawn_ready(group).is_some_and(|ready| ready > round + walk + GATE_MARGIN_ROUNDS) {
+        if super::farm::respawn_ready(group)
+            .is_some_and(|ready| ready > round + walk + GATE_MARGIN_ROUNDS)
+        {
             return Ok(true);
         }
     }
@@ -301,7 +306,10 @@ pub fn bank_gems() -> Result<()> {
             goals.draw_chebyshev(altar, range as f32)?;
             // An ally on the gate: wait on a queue tile beside it (GATE_QUEUE).
             if GATE_QUEUE {
-                if let Some((_, gates)) = altar_access()?.iter().find(|(a, g)| *a == altar && !g.is_empty()) {
+                if let Some((_, gates)) = altar_access()?
+                    .iter()
+                    .find(|(a, g)| *a == altar && !g.is_empty())
+                {
                     goals.union_assign(&queue_tiles(altar, gates)?)?;
                 }
             }
@@ -391,7 +399,9 @@ pub fn end_game_bank() -> Result<bool> {
             .min()
             .unwrap_or(0),
     };
-    let left = cambc::constants().max_rounds.saturating_sub(cambc::round_number()?);
+    let left = cambc::constants()
+        .max_rounds
+        .saturating_sub(cambc::round_number()?);
     Ok(left <= steps + gems.div_ceil(10) + END_BANK_MARGIN)
 }
 

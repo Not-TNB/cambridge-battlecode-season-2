@@ -87,7 +87,8 @@ fn solo_group(index: usize) -> bool {
 
 // Whether an ally has claimed group `index` (and we're not close enough to take it anyway).
 pub fn claimed_by_ally(index: usize, gap: i32) -> Result<bool> {
-    if index >= BITS || gap <= CLAIM_IGNORE_TILES || MINE.with(|m| m.get()) == Some(index) || !on()? {
+    if index >= BITS || gap <= CLAIM_IGNORE_TILES || MINE.with(|m| m.get()) == Some(index) || !on()?
+    {
         return Ok(false);
     }
     Ok(read()? & (1 << index) != 0)
@@ -119,11 +120,14 @@ pub fn sync(target: Option<Vec2>) -> Result<()> {
         return Ok(());
     }
     let me = me()?;
-    let farming = me.is_alive()? && !me.is_recalling()? && FARMED_ROUND.with(|f| f.get()) == Some(round);
+    let farming =
+        me.is_alive()? && !me.is_recalling()? && FARMED_ROUND.with(|f| f.get()) == Some(round);
     let want = if farming {
         target.and_then(|t| {
             let index = super::world::group_at(t).ok().flatten()?;
-            let close = me.position().is_ok_and(|p| distance(p, t) <= CLAIM_MAX_TILES);
+            let close = me
+                .position()
+                .is_ok_and(|p| distance(p, t) <= CLAIM_MAX_TILES);
             (index < BITS && solo_group(index) && close).then_some(index)
         })
     } else {
@@ -142,6 +146,10 @@ pub fn sync(target: Option<Vec2>) -> Result<()> {
     }
     write(bits)?;
     MINE.with(|m| m.set(want));
-    super::trace::trace(if want.is_some() { "claim" } else { "claim-release" });
+    super::trace::trace(if want.is_some() {
+        "claim"
+    } else {
+        "claim-release"
+    });
     Ok(())
 }

@@ -39,15 +39,20 @@ fn fight_distance() -> Result<i32> {
     let here = me()?.position()?;
     let mut near = 0;
     for ally in &sight.allies {
-        if ally.position().is_ok_and(|p| distance(p, here) <= PACK_FIGHT_ALLY_TILES) {
+        if ally
+            .position()
+            .is_ok_and(|p| distance(p, here) <= PACK_FIGHT_ALLY_TILES)
+        {
             near += 1;
         }
     }
-    Ok(if near >= PACK_FIGHT_ALLIES && near + 1 > sight.enemies.len() {
-        PACK_FIGHT_DISTANCE
-    } else {
-        FIGHT_ENEMY_MAX_DISTANCE
-    })
+    Ok(
+        if near >= PACK_FIGHT_ALLIES && near + 1 > sight.enemies.len() {
+            PACK_FIGHT_DISTANCE
+        } else {
+            FIGHT_ENEMY_MAX_DISTANCE
+        },
+    )
 }
 
 // Nearby visible enemies worth fighting, weakest first (health read once per enemy).
@@ -56,7 +61,11 @@ pub fn fightable_enemies() -> Result<Vec<Champion>> {
     let here = me()?.position()?;
     let mut by_health = Vec::new();
     let sight = sight()?;
-    let max_distance = if sight.enemies.is_empty() { FIGHT_ENEMY_MAX_DISTANCE } else { fight_distance()? };
+    let max_distance = if sight.enemies.is_empty() {
+        FIGHT_ENEMY_MAX_DISTANCE
+    } else {
+        fight_distance()?
+    };
     for enemy in &sight.enemies {
         let position = enemy.position()?;
         if distance(here, position) >= max_distance
@@ -237,7 +246,9 @@ fn step_out_of_camps(enemies: &[Champion]) -> Result<bool> {
     let hits = |tile: Vec2| {
         camps
             .iter()
-            .filter(|&&(c, r, s)| distance(c, tile) <= r && s.is_none_or(|s| distance(c, tile) <= s))
+            .filter(|&&(c, r, s)| {
+                distance(c, tile) <= r && s.is_none_or(|s| distance(c, tile) <= s)
+            })
             .count()
     };
     let now = hits(here);
@@ -264,7 +275,11 @@ fn step_out_of_camps(enemies: &[Champion]) -> Result<bool> {
             continue;
         }
         let in_range = targets.iter().any(|&t| distance(t, tile) <= range);
-        let nearest = targets.iter().map(|&t| distance(t, tile)).min().unwrap_or(0);
+        let nearest = targets
+            .iter()
+            .map(|&t| distance(t, tile))
+            .min()
+            .unwrap_or(0);
         let key = (hits(tile), !in_range, nearest);
         if best.is_none_or(|(k, _)| key < k) {
             best = Some((key, tile));
@@ -277,7 +292,11 @@ fn step_out_of_camps(enemies: &[Champion]) -> Result<bool> {
         trace("no-camp-exit");
         return Ok(false);
     }
-    trace(if count == 0 { "fight-step-out-of-camps" } else { "fight-leave-camp" });
+    trace(if count == 0 {
+        "fight-step-out-of-camps"
+    } else {
+        "fight-leave-camp"
+    });
     Ok(true)
 }
 
@@ -324,7 +343,7 @@ fn keep_distance(enemies: &[Champion]) -> Result<bool> {
     for enemy in enemies {
         reach.push((
             enemy.position()?,
-            enemy.attack_range()? + enemy.base_stats()?.base_move_speed as i32,
+            enemy.attack_range()? + enemy.base_stats()?.base_move_speed,
         ));
     }
     // > 0: no enemy can hit this tile next turn; larger means further out than needed.

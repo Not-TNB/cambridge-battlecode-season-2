@@ -303,10 +303,13 @@ fn encode(entries: Vec<Entry>) -> Vec<u8> {
     bytes
 }
 
-// Play: access and crossing per camp group, indexed as in camp_groups(). None: not in the table.
-fn table() -> Result<&'static [Option<(Access, Option<Crossing>)>]> {
+// A camp group's access and crossing; None: not in the table.
+type TableEntry = Option<(Access, Option<Crossing>)>;
+
+// Play: access and crossing per camp group, indexed as in camp_groups().
+fn table() -> Result<&'static [TableEntry]> {
     thread_local! {
-        static TABLE: OnceCell<&'static [Option<(Access, Option<Crossing>)>]> = const { OnceCell::new() };
+        static TABLE: OnceCell<&'static [TableEntry]> = const { OnceCell::new() };
     }
     if let Some(table) = TABLE.with(|t| t.get().copied()) {
         return Ok(table);
@@ -366,7 +369,10 @@ fn has_dash() -> Result<bool> {
 
 // Whether group `index` can be walked to from our spawn (not in the table: counts as walkable).
 pub fn walkable(index: usize) -> Result<bool> {
-    Ok(matches!(table()?.get(index).copied().flatten(), None | Some((Access::Walk, _))))
+    Ok(matches!(
+        table()?.get(index).copied().flatten(),
+        None | Some((Access::Walk, _))
+    ))
 }
 
 // Whether this champion can get to group `index`: on foot, or across with its dash.

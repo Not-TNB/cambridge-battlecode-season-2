@@ -87,7 +87,9 @@ impl StepsFrom {
         if !WALK_TARGETS {
             return straight;
         }
-        let field = self.field.get_or_init(|| reused_or_built(self.origin, self.cap.get()));
+        let field = self
+            .field
+            .get_or_init(|| reused_or_built(self.origin, self.cap.get()));
         match field.as_ref().map(|f| f.get(tile)) {
             Some(Ok(d)) if d != DistanceField::UNREACHABLE => d as i32,
             Some(Ok(_)) => self.cap.get() as i32 + straight,
@@ -173,7 +175,12 @@ pub fn spawn_steps(tile: Vec2) -> Option<i32> {
 fn spawn_field() -> Result<(Vec<u16>, i32)> {
     let spawn = cambc::map::spawn_region(cambc::Team::Ally)?;
     let mut field = DistanceField::new()?;
-    field.compute(terrain_tiles()?, spawn, &mut Bitboard::new()?, DistanceField::UNREACHABLE)?;
+    field.compute(
+        terrain_tiles()?,
+        spawn,
+        &mut Bitboard::new()?,
+        DistanceField::UNREACHABLE,
+    )?;
     Ok((field.export_linear_buffer()?, field.width()))
 }
 
@@ -191,6 +198,11 @@ fn altar_field() -> Result<(Vec<u16>, i32)> {
     let altars = cambc::map::altars()?;
     let blocked = terrain_tiles()?.intersect(&altars.complement()?)?;
     let mut field = DistanceField::new()?;
-    field.compute(&blocked, altars, &mut Bitboard::new()?, DistanceField::UNREACHABLE)?;
+    field.compute(
+        &blocked,
+        altars,
+        &mut Bitboard::new()?,
+        DistanceField::UNREACHABLE,
+    )?;
     Ok((field.export_linear_buffer()?, field.width()))
 }

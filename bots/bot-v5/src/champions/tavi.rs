@@ -15,7 +15,11 @@ impl ChampionAi for Tavi {
     // ChampionAi::build). 2026-10-22, 320 games of Bruiser builds against the Power ones: 193-127,
     // his gold +12%, his deaths 3.3 against 4.1.
     fn build(&self) -> &'static [I] {
-        &[I::BruiserShardOfStrength, I::DurabilityShardOfHealth, I::BruiserShardOfStrength]
+        &[
+            I::BruiserShardOfStrength,
+            I::DurabilityShardOfHealth,
+            I::BruiserShardOfStrength,
+        ]
     }
 
     fn shops_anywhere(&self) -> bool {

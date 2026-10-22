@@ -74,7 +74,10 @@ fn next_camp_close() -> Result<bool> {
     };
     let here = me()?.position()?;
     Ok(common::distance(target, here) <= GREED_TARGET_TILES
-        && common::sight()?.camps.iter().any(|c| c.spawn_position() == target))
+        && common::sight()?
+            .camps
+            .iter()
+            .any(|c| c.spawn_position() == target))
 }
 
 // Per-champion state survives between turns. Pick one stat and keep buying it.
@@ -111,9 +114,7 @@ const TREASURE_EVERYONE_AT: usize = 0;
 // TREASURE_EVERYONE_AT and opening::treasure_first), unless the build already has one.
 fn build_for(ai: &dyn ChampionAi) -> Result<&'static [Item]> {
     let build = ai.build();
-    let has_treasure = build
-        .iter()
-        .any(|&i| matches!(i as u32, 18..=23));
+    let has_treasure = build.iter().any(|&i| matches!(i as u32, 18..=23));
     let Some(&first) = build.first() else {
         return Ok(build);
     };
@@ -263,11 +264,12 @@ impl Bot {
             return Ok(());
         }
         if me.is_recalling()? {
-            let cancel = if CANCEL_GO_HOME_RECALL && self.recall_reason == Some(RecallReason::GoHome) {
-                cancel_recall_for()?
-            } else {
-                None
-            };
+            let cancel =
+                if CANCEL_GO_HOME_RECALL && self.recall_reason == Some(RecallReason::GoHome) {
+                    cancel_recall_for()?
+                } else {
+                    None
+                };
             match cancel {
                 Some(why) if me.cancel_recall().is_ok() => {
                     common::trace(why);
@@ -379,11 +381,11 @@ impl Bot {
             && next_camp_close()?
             && safety::quiet_for(GREED_QUIET_ROUNDS)?;
         let home_at = if greedy { GREED_HOME_WILLINGNESS } else { 1.0 };
-        let willingness = crate::common::base_willingness(ai.shops_anywhere(), rounds_away)?;
+        let willingness = common::base_willingness(ai.shops_anywhere(), rounds_away)?;
         let wants_home = !at_spawn
             && !capturing
             && !(FINISH_CAMP_BEFORE_HOME && collect::in_camp_fight()?)
-            && !crate::common::end_game_bank()?
+            && !common::end_game_bank()?
             && ((willingness >= home_at && willingness >= near_gold_home_at()?)
                 || crate::opening::carry_wants_home(ai.shops_anywhere())?);
         common::checkpoint("turn-base-check");
@@ -395,9 +397,9 @@ impl Bot {
                 common::trace("help-ally-camp");
                 return common::join_camp_fight(&camps);
             }
-            if crate::common::BANK_BEFORE_RECALL
+            if common::BANK_BEFORE_RECALL
                 && me.gem_count()? > 0
-                && crate::common::unlocked_altar_within(crate::common::BANK_BEFORE_RECALL_TILES)?
+                && common::unlocked_altar_within(common::BANK_BEFORE_RECALL_TILES)?
                 && cambc::fuel_remaining()? >= MIN_FUEL_FOR_PATHING
             {
                 common::trace("bank-first");

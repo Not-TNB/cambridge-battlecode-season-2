@@ -67,7 +67,11 @@ pub fn note_camp_hit(index: usize) {
 // Whether we hit a camp within the last CAMP_COMMIT_ROUNDS rounds: we're in a camp fight.
 pub fn in_camp_fight() -> Result<bool> {
     let round = cambc::round_number()?;
-    Ok(ENGAGED.with(|e| e.borrow().iter().any(|&(_, r)| round < r + CAMP_COMMIT_ROUNDS)))
+    Ok(ENGAGED.with(|e| {
+        e.borrow()
+            .iter()
+            .any(|&(_, r)| round < r + CAMP_COMMIT_ROUNDS)
+    }))
 }
 
 fn committed(index: usize) -> Result<bool> {
@@ -92,7 +96,11 @@ fn partly_cleared(ctx: &FightContext, index: usize) -> Result<bool> {
     }
     for member in camp_groups()?[index].camps() {
         let spawn = member.spawn_position();
-        match ctx.live.iter().find(|(g, c)| *g == index && c.spawn_position() == spawn) {
+        match ctx
+            .live
+            .iter()
+            .find(|(g, c)| *g == index && c.spawn_position() == spawn)
+        {
             Some((_, c)) => {
                 if c.health()? < c.max_health()? {
                     return Ok(true);
@@ -124,14 +132,22 @@ pub fn presumed_winnable(index: usize) -> Result<bool> {
         let mut c = c.borrow_mut();
         let ctx = c.as_mut().expect("built above");
         let camps = group_camps(ctx, index)?;
-        let Some(at) = camps.iter().map(|c| c.0).min_by_key(|&p| distance(p, ctx.here)) else {
+        let Some(at) = camps
+            .iter()
+            .map(|c| c.0)
+            .min_by_key(|&p| distance(p, ctx.here))
+        else {
             return Ok(true);
         };
         let helpers: Vec<Helper> = ctx
             .helpers
             .iter()
             .map(|&(p, range, damage, hp, floor)| {
-                let p = if distance(p, ctx.here) <= TRAVEL_TILES { at } else { p };
+                let p = if distance(p, ctx.here) <= TRAVEL_TILES {
+                    at
+                } else {
+                    p
+                };
                 (p, range, damage, hp, floor)
             })
             .collect();
@@ -154,8 +170,12 @@ thread_local! {
 
 pub fn struggling(round: u32) -> bool {
     super::rally::STRUGGLE_JOIN_EXTRA_STEPS >= 0
-        && RECENT_LOSSES.with(|r| r.borrow().iter().filter(|&&(_, at)| round < at + STRUGGLE_ROUNDS).count())
-            >= STRUGGLE_LOSSES
+        && RECENT_LOSSES.with(|r| {
+            r.borrow()
+                .iter()
+                .filter(|&&(_, at)| round < at + STRUGGLE_ROUNDS)
+                .count()
+        }) >= STRUGGLE_LOSSES
 }
 
 // Gold of the camp groups in sight within `tiles` of us that we'd clear (live camps, reachable, not
@@ -179,7 +199,8 @@ pub fn nearby_camp_gold(tiles: i32) -> Result<u32> {
         // Losses judged already (recently_lost, no host calls), not camp_fight_winnable: judging
         // every group in reach here cost up to 52k fuel on 00lanes, leaving none to walk, so a
         // champion that wanted home but saw gold near stood still for 118 turns.
-        if !crate::regions::reachable_for_me(index)? || recently_lost(index, cambc::round_number()?) {
+        if !crate::regions::reachable_for_me(index)? || recently_lost(index, cambc::round_number()?)
+        {
             continue;
         }
         gold += camp_groups()?[index].gold_value();
@@ -364,8 +385,8 @@ pub fn camp_fight_winnable(index: usize) -> Result<Option<bool>> {
         }
         // A rally group (rally.rs) or the team target (opening.rs) is judged afresh every turn:
         // allies arriving should flip it.
-        let rally = super::rally::active()? == Some(index)
-            || crate::opening::team_target()? == Some(index);
+        let rally =
+            super::rally::active()? == Some(index) || crate::opening::team_target()? == Some(index);
         // A partly cleared group (a member dead or damaged) is judged afresh: a loss judged at full
         // strength kept it dropped for CAMP_LOSS_MEMORY_ROUNDS while allies cleared half of it.
         let lost = !rally && recently_lost(index, ctx.round) && !partly_cleared(ctx, index)?;
@@ -496,13 +517,17 @@ fn judge_with(ctx: &FightContext, index: usize) -> Result<Option<bool>> {
             v.borrow()
                 .get(index)
                 .and_then(|slot| slot.as_ref())
-                .filter(|(stored, k, _)| ctx.round < stored + CAMP_VERDICT_KEEP_ROUNDS && k == coarse)
+                .filter(|(stored, k, _)| {
+                    ctx.round < stored + CAMP_VERDICT_KEEP_ROUNDS && k == coarse
+                })
                 .map(|&(_, _, winnable)| winnable)
         })
     });
     if let Some(winnable) = kept {
         super::trace::trace("verdict-kept");
-        if super::trace::VERIFY_FUEL_CACHES && fight_winnable(ctx, camps.clone(), &ctx.helpers)? != winnable {
+        if super::trace::VERIFY_FUEL_CACHES
+            && fight_winnable(ctx, camps.clone(), &ctx.helpers)? != winnable
+        {
             super::trace::trace("verdict-cache-mismatch");
         }
         return Ok(Some(winnable));
@@ -550,7 +575,12 @@ fn coarse_key(ctx: &FightContext, camps: &[(Vec2, f32, f32, i32)]) -> CoarseKey 
                 .min()
                 .unwrap_or(0)
                 - range.max(CAMP_ALLY_SUPPORT_RADIUS);
-            (range, damage as i32 / 5, hp as i32 / 100, gap.clamp(0, ALLY_JOIN_TURNS + 1))
+            (
+                range,
+                damage as i32 / 5,
+                hp as i32 / 100,
+                gap.clamp(0, ALLY_JOIN_TURNS + 1),
+            )
         })
         .collect();
     helpers.sort_unstable();
@@ -558,10 +588,17 @@ fn coarse_key(ctx: &FightContext, camps: &[(Vec2, f32, f32, i32)]) -> CoarseKey 
         camps
             .iter()
             .map(|&(position, health, _, range)| {
-                (health as i32 / 100, range >= ctx.range || distance(position, ctx.here) <= range)
+                (
+                    health as i32 / 100,
+                    range >= ctx.range || distance(position, ctx.here) <= range,
+                )
             })
             .collect(),
-        [ctx.hp as i32 / 50, ctx.floor as i32 / 50, ctx.outgoing as i32 / 5],
+        [
+            ctx.hp as i32 / 50,
+            ctx.floor as i32 / 50,
+            ctx.outgoing as i32 / 5,
+        ],
         helpers,
     )
 }
@@ -662,7 +699,11 @@ fn closed_form(ctx: &FightContext, camps: &[(Vec2, f32, f32, i32)], helpers: &[H
     let joins: Vec<Option<f32>> = helpers
         .iter()
         .map(|&(position, range, ..)| {
-            let gap = live.iter().map(|c| distance(c.2, position)).min().unwrap_or(0)
+            let gap = live
+                .iter()
+                .map(|c| distance(c.2, position))
+                .min()
+                .unwrap_or(0)
                 - range.max(CAMP_ALLY_SUPPORT_RADIUS);
             if gap <= 0 {
                 Some(0.0)
@@ -812,12 +853,13 @@ fn simulate(
             if health <= 0.0 || (range < ctx.range && distance(position, ctx.here) > range) {
                 continue;
             }
-            let targets: Vec<usize> = std::iter::once(0)
-                .chain((0..helpers.len()).filter_map(|i| {
-                    (joined[i + 1] && in_support(i, position)).then_some(i + 1)
-                }))
-                .filter(|&i| joined[i])
-                .collect();
+            let targets: Vec<usize> =
+                std::iter::once(0)
+                    .chain((0..helpers.len()).filter_map(|i| {
+                        (joined[i + 1] && in_support(i, position)).then_some(i + 1)
+                    }))
+                    .filter(|&i| joined[i])
+                    .collect();
             if !targets.is_empty() {
                 let damage = strength / targets.len() as f32;
                 for target in targets {
@@ -991,7 +1033,9 @@ pub fn grab_reward_before_recall() -> Result<bool> {
         return Ok(false);
     }
     for camp in &sight.camps {
-        if camp.is_awake().unwrap_or(true) && distance(camp.spawn_position(), here) <= camp.attack_range()? {
+        if camp.is_awake().unwrap_or(true)
+            && distance(camp.spawn_position(), here) <= camp.attack_range()?
+        {
             return Ok(false);
         }
     }
@@ -1002,11 +1046,22 @@ pub fn grab_reward_before_recall() -> Result<bool> {
             .camps()
             .iter()
             .any(|c| distance(c.spawn_position(), here) <= REWARD_BEFORE_RECALL_TILES);
-        let seen = group.camps().iter().any(|c| sight.visible.is_set(c.spawn_position()).unwrap_or(false));
-        if !near || !seen || sight.camps.iter().any(|c| group_at(c.spawn_position()).ok().flatten() == Some(index)) {
+        let seen = group
+            .camps()
+            .iter()
+            .any(|c| sight.visible.is_set(c.spawn_position()).unwrap_or(false));
+        if !near
+            || !seen
+            || sight
+                .camps
+                .iter()
+                .any(|c| group_at(c.spawn_position()).ok().flatten() == Some(index))
+        {
             continue;
         }
-        if !matches!(group.state(), Ok(cambc::CampGroupState::RewardAvailable)) || super::camps::ally_on_group(group, false)? {
+        if !matches!(group.state(), Ok(cambc::CampGroupState::RewardAvailable))
+            || super::camps::ally_on_group(group, false)?
+        {
             continue;
         }
         if group.camps().iter().any(|c| c.spawn_position() == here) {
@@ -1129,8 +1184,10 @@ pub fn capturing() -> Result<bool> {
         return Ok(false);
     };
     let group = &camp_groups()?[index];
-    Ok(matches!(group.state(), Ok(cambc::CampGroupState::RewardAvailable))
-        && !(super::camps::CAPTURE_CLAIM && super::camps::claimed_by_other(group)?))
+    Ok(
+        matches!(group.state(), Ok(cambc::CampGroupState::RewardAvailable))
+            && !(super::camps::CAPTURE_CLAIM && super::camps::claimed_by_other(group)?),
+    )
 }
 
 // Escort: tanks and Willow only chase an enemy a damage dealer (within ESCORT_RADIUS of it) is
@@ -1199,7 +1256,8 @@ fn ally_fighting(camp: &Camp) -> Result<bool> {
 // SKIP_UNREACHABLE_CAMPS), and a follow-only escort leaves sleeping camps to the damage dealers
 // unless the camp's group is the rally or team target.
 pub fn may_hit_camp(camp: &Camp, index: usize) -> Result<bool> {
-    if SKIP_UNREACHABLE_CAMPS && !crate::regions::reachable_for_me(index)? && !ally_fighting(camp)? {
+    if SKIP_UNREACHABLE_CAMPS && !crate::regions::reachable_for_me(index)? && !ally_fighting(camp)?
+    {
         return Ok(false);
     }
     if !follow_only()? || camp.is_awake().unwrap_or(true) {
@@ -1271,9 +1329,7 @@ pub const FOLLOW_HURT_BELOW: f32 = 0.0;
 pub fn escort_follow_goals() -> Result<cambc::Bitboard> {
     let here = me()?.position()?;
     let mut target = None;
-    if FOLLOW_HURT_BELOW > 0.0
-        && class_of(me()?.champion_name()?) == ClassKind::Healer
-    {
+    if FOLLOW_HURT_BELOW > 0.0 && class_of(me()?.champion_name()?) == ClassKind::Healer {
         let mut worst: Option<(f32, Vec2)> = None;
         for ally in &sight()?.allies {
             if !ally.is_alive()? || ally.is_recalling()? {

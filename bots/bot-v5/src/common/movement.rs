@@ -34,7 +34,11 @@ fn compute_path_field(blocked: &Bitboard, goals: &Bitboard, origin: Vec2) -> Res
     Ok(field)
 }
 
-fn path_field(blocked: &Bitboard, goals: &Bitboard, origin: Vec2) -> Result<std::rc::Rc<DistanceField>> {
+fn path_field(
+    blocked: &Bitboard,
+    goals: &Bitboard,
+    origin: Vec2,
+) -> Result<std::rc::Rc<DistanceField>> {
     let round = cambc::round_number()?;
     if PATH_FIELD_KEEP_ROUNDS > 0 {
         let kept = PATH_FIELD.with(|c| {
@@ -43,7 +47,9 @@ fn path_field(blocked: &Bitboard, goals: &Bitboard, origin: Vec2) -> Result<std:
                 .filter(|(built, kept_goals, field)| {
                     round < built + PATH_FIELD_KEEP_ROUNDS
                         && kept_goals == goals
-                        && field.get(origin).is_ok_and(|d| d != DistanceField::UNREACHABLE)
+                        && field
+                            .get(origin)
+                            .is_ok_and(|d| d != DistanceField::UNREACHABLE)
                 })
                 .map(|(_, _, field)| field.clone())
         });
@@ -190,7 +196,11 @@ pub fn centre_bias(tile: Vec2) -> f32 {
             let walls = cambc::map::walls().ok();
             let (w, h) = walls.map_or((1, 1), |b| (b.width(), b.height()));
             let (w, h) = (w as f32, h as f32);
-            ((w - 1.0) / 2.0, (h - 1.0) / 2.0, (w * w + h * h).sqrt().max(1.0))
+            (
+                (w - 1.0) / 2.0,
+                (h - 1.0) / 2.0,
+                (w * w + h * h).sqrt().max(1.0),
+            )
         })
     });
     let (dx, dy) = (tile.x as f32 - cx, tile.y as f32 - cy);

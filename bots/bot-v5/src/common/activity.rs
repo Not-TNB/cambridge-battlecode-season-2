@@ -63,7 +63,7 @@ pub fn end_turn(state: Option<&'static str>) -> Result<()> {
         return Ok(());
     }
     let tags = TAGS.with(|t| std::mem::take(&mut *t.borrow_mut()));
-    let has = |k: &str| tags.iter().any(|t| *t == k);
+    let has = |k: &str| tags.contains(&k);
     let has_prefix = |p: &str| tags.iter().any(|t| t.starts_with(p));
     let moved = match (START.with(|s| s.get()), me().and_then(|m| m.position())) {
         (Some((_, a)), Ok(b)) => a != b,
@@ -90,12 +90,19 @@ pub fn end_turn(state: Option<&'static str>) -> Result<()> {
     } else if moved {
         if has("bank") || has("bank-first") || has_prefix("help-ally-before-bank") {
             "walk-bank"
-        } else if has("go-home") || has("retreat") || has("walk-home") || has("low-hp")
+        } else if has("go-home")
+            || has("retreat")
+            || has("walk-home")
+            || has("low-hp")
             || has("recall-dodge")
         {
             "walk-home"
-        } else if has("retreat-fight") || has("kite") || has_prefix("keep-") || has_prefix("chase")
-            || has("follow-lost") || has_prefix("fight-")
+        } else if has("retreat-fight")
+            || has("kite")
+            || has_prefix("keep-")
+            || has_prefix("chase")
+            || has("follow-lost")
+            || has_prefix("fight-")
         {
             "fight-move"
         } else if has_prefix("assist") {
@@ -123,12 +130,16 @@ pub fn end_turn(state: Option<&'static str>) -> Result<()> {
         let (mut allies, mut enemies) = (0, 0);
         if let Ok(sight) = super::world::sight() {
             for a in &sight.allies {
-                if a.position().is_ok_and(|p| super::world::distance(p, here) <= 6) {
+                if a.position()
+                    .is_ok_and(|p| super::world::distance(p, here) <= 6)
+                {
                     allies += 1;
                 }
             }
             for e in &sight.enemies {
-                if e.position().is_ok_and(|p| super::world::distance(p, here) <= 8) {
+                if e.position()
+                    .is_ok_and(|p| super::world::distance(p, here) <= 8)
+                {
                     enemies += 1;
                 }
             }
@@ -143,10 +154,17 @@ pub fn end_turn(state: Option<&'static str>) -> Result<()> {
             }
         });
     } else if WAS_ALIVE.with(|w| w.get()) {
-        let mut line = format!("DIED {:?} r{}", me()?.champion_name()?, cambc::round_number()?);
+        let mut line = format!(
+            "DIED {:?} r{}",
+            me()?.champion_name()?,
+            cambc::round_number()?
+        );
         RECENT.with(|r| {
             for (round, cat, tags, hp, allies, enemies, gems) in r.borrow().iter() {
-                line.push_str(&format!(" || r{round} {cat} hp{hp} a{allies} e{enemies} g{gems} [{}]", tags.join(" ")));
+                line.push_str(&format!(
+                    " || r{round} {cat} hp{hp} a{allies} e{enemies} g{gems} [{}]",
+                    tags.join(" ")
+                ));
             }
         });
         println!("{line}");
@@ -176,7 +194,7 @@ pub fn end_turn(state: Option<&'static str>) -> Result<()> {
         line.push_str(" || idle-tags:");
         IDLE_TAGS.with(|c| {
             let mut v = c.borrow().clone();
-            v.sort_by(|a, b| b.1.cmp(&a.1));
+            v.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
             for (k, n) in v.iter().take(12) {
                 line.push_str(&format!(" {k}={n}"));
             }

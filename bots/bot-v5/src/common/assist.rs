@@ -97,8 +97,10 @@ pub fn assist_allies() -> Result<Option<bool>> {
     // a turn's walk), awake camps with it in range, then (to maximise) the nearest enemy's distance.
     let mut enemies = Vec::new();
     for enemy in &sight.enemies {
-        if let (Ok(p), Ok(r), Ok(stats)) = (enemy.position(), enemy.attack_range(), enemy.base_stats()) {
-            enemies.push((p, r + stats.base_move_speed as i32));
+        if let (Ok(p), Ok(r), Ok(stats)) =
+            (enemy.position(), enemy.attack_range(), enemy.base_stats())
+        {
+            enemies.push((p, r + stats.base_move_speed));
         }
     }
     // Awake camps as (position, range, nearest other champion in range): one only hits a tile
@@ -114,13 +116,22 @@ pub fn assist_allies() -> Result<Option<bool>> {
     let camp_hits = |tile: Vec2| {
         camps
             .iter()
-            .filter(|&&(c, r, s)| distance(c, tile) <= r && s.is_none_or(|s| distance(c, tile) <= s))
+            .filter(|&&(c, r, s)| {
+                distance(c, tile) <= r && s.is_none_or(|s| distance(c, tile) <= s)
+            })
             .count()
     };
     let exposure = |tile: Vec2| {
-        let reached = enemies.iter().filter(|&&(p, r)| distance(p, tile) <= r).count();
+        let reached = enemies
+            .iter()
+            .filter(|&&(p, r)| distance(p, tile) <= r)
+            .count();
         let hit = camp_hits(tile);
-        let nearest = enemies.iter().map(|&(p, _)| distance(p, tile)).min().unwrap_or(99);
+        let nearest = enemies
+            .iter()
+            .map(|&(p, _)| distance(p, tile))
+            .min()
+            .unwrap_or(99);
         (reached, hit, -nearest)
     };
     // Allies' distances to the target camp, for "someone's in front of us" (ASSIST_SAFE_TILES_ONLY).
@@ -138,11 +149,13 @@ pub fn assist_allies() -> Result<Option<bool>> {
         if enemies.iter().any(|&(p, r)| distance(p, tile) <= r) {
             return false;
         }
-        camp_hits(tile) == 0 || (target_camp && ally_gap < distance(at, tile) && camp_hits(tile) == 1)
+        camp_hits(tile) == 0
+            || (target_camp && ally_gap < distance(at, tile) && camp_hits(tile) == 1)
     };
     let in_range = |tile: Vec2| distance(tile, at) <= range && acceptable(tile);
     // The safest tile in range we can step to this turn (staying put included).
-    let mut best: Option<((usize, usize, i32), Vec2)> = in_range(here).then(|| (exposure(here), here));
+    let mut best: Option<((usize, usize, i32), Vec2)> =
+        in_range(here).then(|| (exposure(here), here));
     if me.can_move()? {
         for tile in blocked_tiles()?
             .reachable_tiles(here, me.base_stats()?.base_move_speed as u16)?
@@ -197,7 +210,11 @@ pub fn assist_allies() -> Result<Option<bool>> {
             }
             trace("assist-approach");
             let away = |tile: Vec2| -> f32 {
-                let nearest = enemies.iter().map(|&(p, _)| distance(p, tile)).min().unwrap_or(99);
+                let nearest = enemies
+                    .iter()
+                    .map(|&(p, _)| distance(p, tile))
+                    .min()
+                    .unwrap_or(99);
                 -0.5 * nearest.min(8) as f32
             };
             Ok(Some(move_towards_closest_with_pull(goals, away, false)?))

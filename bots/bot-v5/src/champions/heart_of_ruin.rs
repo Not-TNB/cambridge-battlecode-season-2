@@ -43,7 +43,11 @@ impl ChampionAi for HeartOfRuin {
             let stats = me.base_stats()?;
             println!(
                 "HEART kit: hp {} str {} focus {} range {} speed {}",
-                stats.base_health, stats.base_strength, stats.base_focus, stats.base_attack_range, stats.base_move_speed
+                stats.base_health,
+                stats.base_strength,
+                stats.base_focus,
+                stats.base_attack_range,
+                stats.base_move_speed
             );
             for ability in me.abilities() {
                 println!(
@@ -76,7 +80,11 @@ impl ChampionAi for HeartOfRuin {
         let low = health <= HEART_SHIELD_HEALTH * me.max_health()?;
         let lethal = burst >= health;
         if low || lethal {
-            crate::common::trace(if lethal { "heart-shield-lethal" } else { "heart-shield-low" });
+            crate::common::trace(if lethal {
+                "heart-shield-lethal"
+            } else {
+                "heart-shield-low"
+            });
             shield.cast_untargeted()?;
         }
         Ok(())

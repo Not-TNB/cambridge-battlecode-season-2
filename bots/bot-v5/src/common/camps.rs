@@ -71,8 +71,16 @@ impl CampFocus {
             Some(tile) if CAMP_FOCUS => group_at(tile)?,
             _ => None,
         };
-        let rally = if CAMP_FOCUS { super::rally::active()? } else { None };
-        Ok(Self { awake, target, rally })
+        let rally = if CAMP_FOCUS {
+            super::rally::active()?
+        } else {
+            None
+        };
+        Ok(Self {
+            awake,
+            target,
+            rally,
+        })
     }
 
     // Order to hit a camp of group `index` in (lower first), or None to leave it alone.
@@ -266,7 +274,12 @@ pub(super) fn ally_on_group(group: &CampGroup, gold_carry: bool) -> Result<bool>
 pub const CAPTURE_CLAIM: bool = false;
 const CLAIM_TILES: i32 = 6;
 
-fn claim_key(name: ChampionType, bonus_gold: bool, at: Vec2, tiles: &[Vec2]) -> (bool, u8, i32, i32) {
+fn claim_key(
+    name: ChampionType,
+    bonus_gold: bool,
+    at: Vec2,
+    tiles: &[Vec2],
+) -> (bool, u8, i32, i32) {
     let class = class_of(name);
     let rank = if bonus_gold {
         0
@@ -277,7 +290,11 @@ fn claim_key(name: ChampionType, bonus_gold: bool, at: Vec2, tiles: &[Vec2]) -> 
     } else {
         2
     };
-    let gap = tiles.iter().map(|&t| distance(t, at)).min().unwrap_or(i32::MAX);
+    let gap = tiles
+        .iter()
+        .map(|&t| distance(t, at))
+        .min()
+        .unwrap_or(i32::MAX);
     (gap > CLAIM_TILES, rank, gap, name as i32)
 }
 
@@ -286,12 +303,22 @@ pub(super) fn claimed_by_other(group: &CampGroup) -> Result<bool> {
     let me = me()?;
     let tiles: Vec<Vec2> = group.camps().iter().map(|c| c.spawn_position()).collect();
     let bonus = |p: cambc::PassiveType| p == cambc::PassiveType::BonusGold;
-    let mine = claim_key(me.champion_name()?, bonus(me.passive()?), me.position()?, &tiles);
+    let mine = claim_key(
+        me.champion_name()?,
+        bonus(me.passive()?),
+        me.position()?,
+        &tiles,
+    );
     for ally in &sight()?.allies {
         if !ally.is_alive()? || ally.is_recalling()? {
             continue;
         }
-        let key = claim_key(ally.champion_name()?, bonus(ally.passive()?), ally.position()?, &tiles);
+        let key = claim_key(
+            ally.champion_name()?,
+            bonus(ally.passive()?),
+            ally.position()?,
+            &tiles,
+        );
         if !key.0 && key < mine {
             return Ok(true);
         }

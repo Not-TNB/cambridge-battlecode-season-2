@@ -126,7 +126,10 @@ pub fn impact_dash(targets: &[(Vec2, f32)], avoid: &[Vec2]) -> Result<bool> {
     let here = me.position()?;
     let range = info.as_dyn().range()? as i32;
     // Nothing within the dash's range plus its radius: nothing to hit.
-    if !targets.iter().any(|&(p, _)| distance(p, here) <= range + radius) {
+    if !targets
+        .iter()
+        .any(|&(p, _)| distance(p, here) <= range + radius)
+    {
         return Ok(false);
     }
     let blocked = super::world::blocked_tiles()?;
@@ -277,7 +280,10 @@ pub fn strike(enemies: &[Champion], moved: bool) -> Result<bool> {
             let mut keyed = Vec::with_capacity(order.len());
             for e in order {
                 let hp = e.health().unwrap_or(f32::MAX);
-                let hit = ability.damage_amount_against(e).or_else(|_| ability.damage_amount()).unwrap_or(0.0);
+                let hit = ability
+                    .damage_amount_against(e)
+                    .or_else(|_| ability.damage_amount())
+                    .unwrap_or(0.0);
                 let threat = if ability.is_cc() {
                     super::dps::turn_damage(e, None).unwrap_or(0.0)
                 } else {
@@ -298,7 +304,10 @@ pub fn strike(enemies: &[Champion], moved: bool) -> Result<bool> {
     // A reset only helps after an attack: it clears the attack cooldown so we can hit again now.
     if let Some(enemy) = attacked {
         for ability in me.abilities() {
-            if ability.is_attack_reset() && ability_ready(ability, me)? && ability.cast_untargeted()? {
+            if ability.is_attack_reset()
+                && ability_ready(ability, me)?
+                && ability.cast_untargeted()?
+            {
                 attack_if_in_range(enemy)?;
                 break;
             }

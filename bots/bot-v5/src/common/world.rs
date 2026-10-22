@@ -184,7 +184,10 @@ fn visible_camps() -> Result<Vec<Camp>> {
     }
     let tiles = cambc::vision::camp_tiles()?.positions()?;
     if let Some(camps) = LAST.with(|l| {
-        l.borrow().as_ref().filter(|(t, _)| *t == tiles).map(|(_, c)| c.clone())
+        l.borrow()
+            .as_ref()
+            .filter(|(t, _)| *t == tiles)
+            .map(|(_, c)| c.clone())
     }) {
         return Ok(camps);
     }
@@ -192,7 +195,10 @@ fn visible_camps() -> Result<Vec<Camp>> {
         let mut by_tile = Vec::new();
         for group in camp_groups()? {
             for camp in group.camps() {
-                by_tile.push(((camp.spawn_position().x, camp.spawn_position().y), camp.clone()));
+                by_tile.push((
+                    (camp.spawn_position().x, camp.spawn_position().y),
+                    camp.clone(),
+                ));
             }
         }
         by_tile.sort_by_key(|(t, _)| *t);

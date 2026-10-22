@@ -47,7 +47,7 @@ pub fn ally_helpers() -> Result<Vec<Helper>> {
         helpers.push(Helper {
             origin: ally.position()?,
             range: ally.attack_range()?,
-            speed: ally.base_stats()?.base_move_speed as i32,
+            speed: ally.base_stats()?.base_move_speed,
             damage: ally.strength()?,
         });
     }
@@ -126,7 +126,9 @@ pub fn plan_duel(
     }
     let mut incoming = 0.0;
     for threat in &threats.0 {
-        let shielded = threat.shield.is_some_and(|s| distance(threat.origin, duel_tile) > s);
+        let shielded = threat
+            .shield
+            .is_some_and(|s| distance(threat.origin, duel_tile) > s);
         if (distance(threat.origin, duel_tile) <= threat.range || threat.speed > 0) && !shielded {
             incoming += threat.damage;
         }

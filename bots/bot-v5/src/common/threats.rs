@@ -156,11 +156,15 @@ fn enemy_threats(threats: &mut Vec<Threat>) -> Result<()> {
     Ok(())
 }
 
+// Each visible enemy champion with its threats.
+pub type ThreatsByName = Vec<(ChampionType, Vec<Threat>)>;
+
 // Each visible enemy's threats, read once per round and position (each costs a dozen host calls)
 // and shared by the threat scan and the sightings memory (safety::remember_enemies).
-pub fn enemy_threats_by_name() -> Result<std::rc::Rc<Vec<(ChampionType, Vec<Threat>)>>> {
+pub fn enemy_threats_by_name() -> Result<std::rc::Rc<ThreatsByName>> {
     thread_local! {
-        static CACHE: std::cell::RefCell<Option<(u32, Vec2, std::rc::Rc<Vec<(ChampionType, Vec<Threat>)>>)>> = const { std::cell::RefCell::new(None) };
+        static CACHE: std::cell::RefCell<Option<(u32, Vec2, std::rc::Rc<ThreatsByName>)>> =
+            const { std::cell::RefCell::new(None) };
     }
     let key = (cambc::round_number()?, me()?.position()?);
     if let Some(cached) = CACHE.with(|c| {
@@ -175,7 +179,7 @@ pub fn enemy_threats_by_name() -> Result<std::rc::Rc<Vec<(ChampionType, Vec<Thre
     // one is read once a round: only enemies we couldn't see before the step cost anything. Reading
     // them all again after every step cost ~12k on the turns that ran out of fuel.
     thread_local! {
-        static THIS_ROUND: std::cell::RefCell<(u32, Vec<(ChampionType, Vec<Threat>)>)> =
+        static THIS_ROUND: std::cell::RefCell<(u32, ThreatsByName)> =
             const { std::cell::RefCell::new((0, Vec::new())) };
     }
     THIS_ROUND.with(|t| {
@@ -190,7 +194,11 @@ pub fn enemy_threats_by_name() -> Result<std::rc::Rc<Vec<(ChampionType, Vec<Thre
             continue;
         };
         if let Some(threats) = THIS_ROUND.with(|t| {
-            t.borrow().1.iter().find(|(n, _)| *n == name).map(|(_, th)| th.clone())
+            t.borrow()
+                .1
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, th)| th.clone())
         }) {
             all.push((name, threats));
             continue;
@@ -217,13 +225,15 @@ pub fn burst_damage_here() -> Result<f32> {
     let sight = sight()?;
     let mut burst = 0.0;
     for camp in &sight.camps {
-        if camp.is_awake().unwrap_or(false) && distance(camp.spawn_position(), here) <= camp.attack_range()? {
+        if camp.is_awake().unwrap_or(false)
+            && distance(camp.spawn_position(), here) <= camp.attack_range()?
+        {
             burst += camp.strength()?;
         }
     }
     for enemy in &sight.enemies {
         let gap = distance(enemy.position()?, here);
-        let walk = enemy.base_stats()?.base_move_speed as i32;
+        let walk = enemy.base_stats()?.base_move_speed;
         let range = enemy.attack_range()?;
         if gap > range + walk {
             continue;
@@ -261,7 +271,7 @@ pub fn enemy_threats_of(enemy: &Champion, threats: &mut Vec<Threat>) -> Result<(
     let attack_range = enemy.attack_range()?;
     let strength = enemy.strength()?;
     let speed = if DUEL_ENEMIES_JOIN {
-        enemy.base_stats()?.base_move_speed as i32
+        enemy.base_stats()?.base_move_speed
     } else {
         0
     };

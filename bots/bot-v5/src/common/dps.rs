@@ -40,7 +40,9 @@ pub fn parts(c: &Champion, target: Option<&Champion>) -> Result<(f32, f32)> {
             autos += uses;
         } else if super::attack::is_damaging(ability) {
             let hit = match target {
-                Some(t) => ability.damage_amount_against(t).or_else(|_| ability.damage_amount())?,
+                Some(t) => ability
+                    .damage_amount_against(t)
+                    .or_else(|_| ability.damage_amount())?,
                 None => ability.damage_amount()?,
             };
             if AVERAGED {

@@ -48,7 +48,11 @@ impl ChampionAi for Willow {
             return Ok(());
         }
         let range = info.as_dyn().range()? as i32;
-        let amount = if HEAL_MISSING_SHARE > 0.0 { heal.heal_amount().unwrap_or(0.0) } else { 0.0 };
+        let amount = if HEAL_MISSING_SHARE > 0.0 {
+            heal.heal_amount().unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let mut best = None;
         let sight = crate::common::sight()?;
         for ally in &sight.allies {
@@ -61,7 +65,8 @@ impl ChampionAi for Willow {
             let (health, max) = (ally.health()?, ally.max_health()?);
             let fraction = health / max;
             let worth = amount > 0.0 && max - health >= HEAL_MISSING_SHARE * amount;
-            if (fraction < HEAL_BELOW || worth) && best.as_ref().is_none_or(|(_, f)| fraction < *f) {
+            if (fraction < HEAL_BELOW || worth) && best.as_ref().is_none_or(|(_, f)| fraction < *f)
+            {
                 best = Some((ally, fraction));
             }
         }

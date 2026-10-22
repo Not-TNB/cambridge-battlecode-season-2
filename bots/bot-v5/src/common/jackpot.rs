@@ -52,9 +52,13 @@ fn analyse(walk_check: bool) -> Result<Jackpots> {
     let mut rates = Vec::with_capacity(groups.len());
     for (index, group) in groups.iter().enumerate() {
         let walkable = !walk_check || crate::regions::walkable(index)?;
-        let monolith = group.camps().iter().any(|c| c.kind() == cambc::CampType::Monolith);
+        let monolith = group
+            .camps()
+            .iter()
+            .any(|c| c.kind() == cambc::CampType::Monolith);
         let rate = if walkable && (JACKPOT_MONOLITHS || !monolith) {
-            group.gem_value() as f32 / (group.max_respawn_timer().max(0) as f32 + JACKPOT_ROUND_OVERHEAD)
+            group.gem_value() as f32
+                / (group.max_respawn_timer().max(0) as f32 + JACKPOT_ROUND_OVERHEAD)
         } else {
             0.0
         };
@@ -90,7 +94,10 @@ fn analyse(walk_check: bool) -> Result<Jackpots> {
     distinct.dedup();
     let clusters = distinct.len();
     let monolith = picked.iter().any(|&i| {
-        groups[i].camps().iter().any(|c| c.kind() == cambc::CampType::Monolith)
+        groups[i]
+            .camps()
+            .iter()
+            .any(|c| c.kind() == cambc::CampType::Monolith)
     });
     let on = JACKPOT
         && clusters >= 1
@@ -99,7 +106,11 @@ fn analyse(walk_check: bool) -> Result<Jackpots> {
     if !on {
         picked.clear();
     }
-    Ok(Jackpots { groups: picked, clusters, on })
+    Ok(Jackpots {
+        groups: picked,
+        clusters,
+        on,
+    })
 }
 
 pub fn jackpots() -> Result<&'static Jackpots> {
@@ -151,7 +162,10 @@ pub fn in_squad() -> bool {
                 .map(crate::constants::draft_of);
             let picks = cambc::draft::current_draft(cambc::Team::Ally).unwrap_or_default();
             match mine {
-                Ok(pick) => picks.iter().position(|&p| p == pick).is_some_and(|i| i < JACKPOT_SQUAD),
+                Ok(pick) => picks
+                    .iter()
+                    .position(|&p| p == pick)
+                    .is_some_and(|i| i < JACKPOT_SQUAD),
                 Err(_) => true,
             }
         })

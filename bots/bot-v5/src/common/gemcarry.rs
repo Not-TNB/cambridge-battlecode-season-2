@@ -48,7 +48,10 @@ pub fn gem_map() -> bool {
 fn ratio() -> Option<f32> {
     let (mut gold, mut gems) = (0.0, 0.0);
     for group in camp_groups().ok()? {
-        let monolith = group.camps().iter().any(|c| c.kind() == cambc::CampType::Monolith);
+        let monolith = group
+            .camps()
+            .iter()
+            .any(|c| c.kind() == cambc::CampType::Monolith);
         let weight = if monolith { 0.25 } else { 1.0 };
         let cycle = group.max_respawn_timer().max(0) as f32 + GEM_CARRY_OVERHEAD;
         gold += weight * group.gold_value() as f32 / cycle;
@@ -77,10 +80,17 @@ pub fn carry() -> Option<ChampionType> {
     if !gem_map() {
         return None;
     }
-    let (marcella, prism) = (team_has(ChampionType::Marcella), team_has(ChampionType::Prism));
+    let (marcella, prism) = (
+        team_has(ChampionType::Marcella),
+        team_has(ChampionType::Prism),
+    );
     let late = cambc::round_number().ok()? >= GEM_CARRY_SWITCH_ROUND;
     match (marcella, prism) {
-        (true, true) => Some(if late { ChampionType::Prism } else { ChampionType::Marcella }),
+        (true, true) => Some(if late {
+            ChampionType::Prism
+        } else {
+            ChampionType::Marcella
+        }),
         (true, false) => Some(ChampionType::Marcella),
         (false, true) => Some(ChampionType::Prism),
         _ => None,
@@ -108,7 +118,11 @@ pub fn leaves_to_carry(group: &CampGroup) -> Result<bool> {
             continue;
         }
         let p = ally.position()?;
-        if group.camps().iter().any(|c| distance(c.spawn_position(), p) <= GEM_CARRY_NEAR_TILES) {
+        if group
+            .camps()
+            .iter()
+            .any(|c| distance(c.spawn_position(), p) <= GEM_CARRY_NEAR_TILES)
+        {
             return Ok(true);
         }
     }
@@ -130,6 +144,8 @@ fn emblems() -> Result<usize> {
 pub fn prism_bank_min() -> Option<u32> {
     (GEM_CARRY_PRISM_BANK > 0
         && am_carry()
-        && me().and_then(|m| m.champion_name()).is_ok_and(|n| n == ChampionType::Prism))
+        && me()
+            .and_then(|m| m.champion_name())
+            .is_ok_and(|n| n == ChampionType::Prism))
     .then_some(GEM_CARRY_PRISM_BANK)
 }

@@ -96,6 +96,8 @@ pub fn post_capture(index: usize, round: u32) -> Result<()> {
         return Ok(());
     }
     POSTED_CAPTURE.with(|p| p.set(Some((index, round))));
-    let respawn = super::world::camp_groups()?[index].max_respawn_timer().max(0) as u32;
+    let respawn = super::world::camp_groups()?[index]
+        .max_respawn_timer()
+        .max(0) as u32;
     post(index, round + CAPTURE_ROUNDS + respawn)
 }

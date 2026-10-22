@@ -84,7 +84,9 @@ fn event_sim(mut ours: Vec<Fighter>, mut theirs: Vec<Fighter>, focus: Focus) -> 
     let target = |side: &[Fighter]| -> Option<usize> {
         let it = side.iter().enumerate().filter(|(_, f)| alive(f));
         match focus {
-            Focus::HighestDamage => it.max_by(|a, b| a.1.damage.total_cmp(&b.1.damage)).map(|(i, _)| i),
+            Focus::HighestDamage => it
+                .max_by(|a, b| a.1.damage.total_cmp(&b.1.damage))
+                .map(|(i, _)| i),
             Focus::LowestHealth => it.min_by(|a, b| a.1.hp.total_cmp(&b.1.hp)).map(|(i, _)| i),
         }
     };
@@ -101,7 +103,9 @@ fn event_sim(mut ours: Vec<Fighter>, mut theirs: Vec<Fighter>, focus: Focus) -> 
         };
         let (ours_out, theirs_out) = (out(&ours, &theirs), out(&theirs, &ours));
         let time = |hp: f32, dps: f32| if dps > 0.0 { hp / dps } else { f32::INFINITY };
-        let dt = time(theirs[a].hp, ours_out).min(time(ours[b].hp, theirs_out)).min(horizon - t);
+        let dt = time(theirs[a].hp, ours_out)
+            .min(time(ours[b].hp, theirs_out))
+            .min(horizon - t);
         if !dt.is_finite() || dt <= 0.0 {
             break;
         }
@@ -131,8 +135,16 @@ fn simulate(mut ours: Vec<(f32, f32)>, mut theirs: Vec<(f32, f32)>) -> (i32, i32
         }
     };
     for _ in 0..TEAMFIGHT_TURNS {
-        let ours_out: f32 = ours.iter().filter(|(hp, _)| *hp > 0.0).map(|(_, d)| d).sum();
-        let theirs_out: f32 = theirs.iter().filter(|(hp, _)| *hp > 0.0).map(|(_, d)| d).sum();
+        let ours_out: f32 = ours
+            .iter()
+            .filter(|(hp, _)| *hp > 0.0)
+            .map(|(_, d)| d)
+            .sum();
+        let theirs_out: f32 = theirs
+            .iter()
+            .filter(|(hp, _)| *hp > 0.0)
+            .map(|(_, d)| d)
+            .sum();
         hit(&mut theirs, ours_out);
         hit(&mut ours, theirs_out);
         if ours.iter().all(|(hp, _)| *hp <= 0.0) || theirs.iter().all(|(hp, _)| *hp <= 0.0) {
@@ -175,9 +187,16 @@ pub fn verdict(enemies: &[Champion]) -> Result<Option<Verdict>> {
         }
     }
     let mut ours = vec![(me.health()?, turn_damage(me)?)];
-    let mut ours_ev = if TEAMFIGHT_EVENT_SIM { vec![fighter(me)?] } else { Vec::new() };
+    let mut ours_ev = if TEAMFIGHT_EVENT_SIM {
+        vec![fighter(me)?]
+    } else {
+        Vec::new()
+    };
     for ally in &sight()?.allies {
-        if !ally.is_alive()? || ally.is_recalling()? || distance(ally.position()?, here) > TEAMFIGHT_TILES {
+        if !ally.is_alive()?
+            || ally.is_recalling()?
+            || distance(ally.position()?, here) > TEAMFIGHT_TILES
+        {
             continue;
         }
         ours.push((ally.health()?, turn_damage(ally)?));
@@ -205,8 +224,11 @@ pub fn verdict(enemies: &[Champion]) -> Result<Option<Verdict>> {
             return Ok(Some(Verdict::Retreat));
         };
         let pick = match focus {
-            Focus::LowestHealth => (0..theirs_ev.len()).min_by(|&a, &b| theirs_ev[a].hp.total_cmp(&theirs_ev[b].hp)),
-            Focus::HighestDamage => (0..theirs_ev.len()).max_by(|&a, &b| theirs_ev[a].damage.total_cmp(&theirs_ev[b].damage)),
+            Focus::LowestHealth => {
+                (0..theirs_ev.len()).min_by(|&a, &b| theirs_ev[a].hp.total_cmp(&theirs_ev[b].hp))
+            }
+            Focus::HighestDamage => (0..theirs_ev.len())
+                .max_by(|&a, &b| theirs_ev[a].damage.total_cmp(&theirs_ev[b].damage)),
         };
         super::trace::trace("teamfight-fight");
         return Ok(pick.map(|i| Verdict::Fight(places[i])));

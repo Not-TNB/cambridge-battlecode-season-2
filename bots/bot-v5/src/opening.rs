@@ -124,13 +124,13 @@ pub enum Mode {
 
 // A camp group as the estimate sees it.
 struct Site {
-    key: Vec2,         // first camp's tile
-    centre: Vec2,      // where we stand to fight it
-    steps: f32,        // walking steps from our spawn
-    gold: f32,         // reward
+    key: Vec2,              // first camp's tile
+    centre: Vec2,           // where we stand to fight it
+    steps: f32,             // walking steps from our spawn
+    gold: f32,              // reward
     camps: Vec<(f32, f32)>, // (health, strength), weakest first
     respawn: f32,
-    gold_only: bool,   // only gold clusters
+    gold_only: bool, // only gold clusters
 }
 
 impl Site {
@@ -160,13 +160,10 @@ fn simulate(sites: &[Site], agents: usize, size: f32, capture: f32) -> (f32, f32
     let mut ready = vec![0.0f32; usable.len()];
     let mut parties: Vec<(f32, Option<usize>)> = vec![(0.0, None); agents];
     let (mut gold, mut clusters) = (0.0, 0.0);
-    loop {
-        let Some(p) = (0..parties.len())
-            .filter(|&p| parties[p].0 < OPENING_ROUNDS)
-            .min_by(|&a, &b| parties[a].0.total_cmp(&parties[b].0))
-        else {
-            break;
-        };
+    while let Some(p) = (0..parties.len())
+        .filter(|&p| parties[p].0 < OPENING_ROUNDS)
+        .min_by(|&a, &b| parties[a].0.total_cmp(&parties[b].0))
+    {
         let (free, at) = parties[p];
         let best = usable
             .iter()
@@ -226,8 +223,16 @@ fn our_sites() -> Result<Vec<Site>> {
         if group.gold_value() == 0 || camps.iter().any(|c| c.kind() == CampType::Monolith) {
             continue;
         }
-        let steps = camps.iter().map(|c| ours[at(c.spawn_position())]).min().unwrap_or(u16::MAX);
-        let enemy = camps.iter().map(|c| theirs[at(c.spawn_position())]).min().unwrap_or(u16::MAX);
+        let steps = camps
+            .iter()
+            .map(|c| ours[at(c.spawn_position())])
+            .min()
+            .unwrap_or(u16::MAX);
+        let enemy = camps
+            .iter()
+            .map(|c| theirs[at(c.spawn_position())])
+            .min()
+            .unwrap_or(u16::MAX);
         if steps == DistanceField::UNREACHABLE || enemy < steps {
             continue;
         }

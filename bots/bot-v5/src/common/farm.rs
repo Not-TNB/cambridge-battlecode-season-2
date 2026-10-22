@@ -22,7 +22,12 @@ thread_local! {
 // The round group `index` is back, if we know it's respawning (seen, or an ally's message).
 pub fn respawn_ready(index: usize) -> Option<u32> {
     let round = cambc::round_number().ok()?;
-    RESPAWN_READY.with(|r| r.borrow().get(index).copied().filter(|&ready| ready > round))
+    RESPAWN_READY.with(|r| {
+        r.borrow()
+            .get(index)
+            .copied()
+            .filter(|&ready| ready > round)
+    })
 }
 
 // Start of every turn (bot.rs): take in an ally's respawn message (respawns.rs).
@@ -97,10 +102,18 @@ pub fn gem_phase_round() -> u32 {
         let mut gold_only = 0.0;
         for group in camp_groups().unwrap_or(&[]) {
             let cycle = group.max_respawn_timer().max(0) as f32 + GEM_SUPPLY_OVERHEAD;
-            if group.camps().iter().all(|c| c.kind() == cambc::CampType::GoldCluster) {
+            if group
+                .camps()
+                .iter()
+                .all(|c| c.kind() == cambc::CampType::GoldCluster)
+            {
                 gold_only += group.gold_value() as f32 * limit / cycle / 2.0;
             }
-            let weight = if group.camps().iter().any(|c| c.kind() == cambc::CampType::Monolith) {
+            let weight = if group
+                .camps()
+                .iter()
+                .any(|c| c.kind() == cambc::CampType::Monolith)
+            {
                 MONOLITH_GEM_WEIGHT
             } else {
                 1.0
@@ -411,14 +424,20 @@ fn jackpot_live() -> bool {
                 let cycle = group.max_respawn_timer().max(0) as f32 + 20.0;
                 let rate = group.gold_value() as f32 / cycle;
                 gold += rate;
-                if group.camps().iter().all(|c| c.kind() == cambc::CampType::GoldCluster) {
+                if group
+                    .camps()
+                    .iter()
+                    .all(|c| c.kind() == cambc::CampType::GoldCluster)
+                {
                     clusters += rate;
                 }
             }
             gold > 0.0 && clusters >= JACKPOT_DELAY_CLUSTER_SHARE * gold
         })
     });
-    !delayed || JACKPOT_FROM_ROUND == 0 || cambc::round_number().is_ok_and(|r| r >= JACKPOT_FROM_ROUND)
+    !delayed
+        || JACKPOT_FROM_ROUND == 0
+        || cambc::round_number().is_ok_and(|r| r >= JACKPOT_FROM_ROUND)
 }
 // Most extra allies a jackpot rally may count on (rally::RALLY_MAX_HELPERS for other groups).
 const JACKPOT_MAX_HELPERS: usize = 4;
@@ -432,9 +451,13 @@ fn contested_penalty() -> Result<impl Fn(Vec2) -> i32> {
     let live = jackpot_live();
     // Stronger than them: their side's groups come closer (press.rs).
     let pressing = super::press::pressing()?;
-    let concentrated = PACK_WEIGHT_CONCENTRATED > 0.0
-        && super::jackpot::jackpots().is_ok_and(|j| j.on);
-    let pack_weight = if concentrated { PACK_WEIGHT_CONCENTRATED } else { PACK_WEIGHT };
+    let concentrated =
+        PACK_WEIGHT_CONCENTRATED > 0.0 && super::jackpot::jackpots().is_ok_and(|j| j.on);
+    let pack_weight = if concentrated {
+        PACK_WEIGHT_CONCENTRATED
+    } else {
+        PACK_WEIGHT
+    };
     let pack = if pack_weight > 0.0 && (concentrated || cambc::round_number()? < PACK_UNTIL_ROUND) {
         super::collect::pack_anchor()?
     } else {
@@ -577,15 +600,15 @@ thread_local! {
 // turn only looks at the camps of groups close enough to be in sight.
 struct GroupInfo {
     centre: Vec2,
-    radius: i32,          // furthest camp from the centre
-    preferred: [bool; 2], // has a camp preferred before / from FARM_GEM_PHASE_ROUND
-    reachable: bool,      // we can get there: on foot, or with our dash (see regions.rs)
-    gold_only: bool,      // only gold clusters (the Cluster opening, opening.rs)
-    contested: bool,      // about as close to the enemy's spawn as to ours (CONTESTED_FARM_PENALTY)
-    big: bool,            // has elk or golems (NEAR_ALLY_BONUS)
-    monolith: bool,       // has a monolith (RALLY_SIDE_STEPS)
-    jackpot: bool,        // a jackpot (jackpot.rs, with jackpot play on)
-    span: bool,           // runs from our half into theirs (SPAN_MODE)
+    radius: i32,            // furthest camp from the centre
+    preferred: [bool; 2],   // has a camp preferred before / from FARM_GEM_PHASE_ROUND
+    reachable: bool,        // we can get there: on foot, or with our dash (see regions.rs)
+    gold_only: bool,        // only gold clusters (the Cluster opening, opening.rs)
+    contested: bool, // about as close to the enemy's spawn as to ours (CONTESTED_FARM_PENALTY)
+    big: bool,       // has elk or golems (NEAR_ALLY_BONUS)
+    monolith: bool,  // has a monolith (RALLY_SIDE_STEPS)
+    jackpot: bool,   // a jackpot (jackpot.rs, with jackpot play on)
+    span: bool,      // runs from our half into theirs (SPAN_MODE)
     near_enemy_spawn: bool, // ENEMY_SPAWN_AVOID_TILES
 }
 
@@ -684,7 +707,10 @@ fn farm_statics() -> Result<&'static FarmStatics> {
                 .camps()
                 .iter()
                 .any(|c| matches!(c.kind(), cambc::CampType::Elk | cambc::CampType::Golem)),
-            monolith: group.camps().iter().any(|c| c.kind() == cambc::CampType::Monolith),
+            monolith: group
+                .camps()
+                .iter()
+                .any(|c| c.kind() == cambc::CampType::Monolith),
             jackpot,
             span,
             near_enemy_spawn: ENEMY_SPAWN_AVOID_TILES > 0
@@ -835,7 +861,11 @@ fn plan_key(here: Vec2, round: u32) -> Result<PlanKey> {
         rally: super::rally::active()?,
         opening: (
             group,
-            if group { crate::opening::team_target()? } else { None },
+            if group {
+                crate::opening::team_target()?
+            } else {
+                None
+            },
             crate::opening::cluster_active()?,
         ),
         here,
@@ -953,8 +983,7 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
             potential_enemy_reach.push((
                 enemy.clone(),
                 enemy.position()?,
-                enemy.attack_range()?
-                    + enemy.base_stats()?.base_move_speed as i32 * FARM_ENEMY_TURNS,
+                enemy.attack_range()? + enemy.base_stats()?.base_move_speed * FARM_ENEMY_TURNS,
             ));
         }
     }
@@ -1077,7 +1106,7 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     let mut available = vec![false; groups.len()];
     let mut dropped = Vec::new(); // groups that aren't goals this turn
     let mut far_unwinnable = Vec::new(); // (gap, group) we can't see and would lose to
-    // Ranking goals by walking distance (walk.rs): built on the first lookup, if any.
+                                         // Ranking goals by walking distance (walk.rs): built on the first lookup, if any.
     let steps = super::walk::StepsFrom::new(here);
     // Whether group `index` is at least PRESUME_MIN_STEPS away on foot (PRESUME_FAR_TARGETS).
     let far_walk = |index: usize| {
@@ -1110,7 +1139,7 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     };
     let mut team_tiles = Vec::new(); // live camps of the team target group
     let mut clusters = Vec::new(); // available gold-cluster groups: (index, nearest camp)
-    // Respawning jackpots we'd reach about when they're back (JACKPOT_RETURN_MARGIN).
+                                   // Respawning jackpots we'd reach about when they're back (JACKPOT_RETURN_MARGIN).
     let mut returning: Vec<usize> = Vec::new();
     // An ally is fighting group `index` and it's small enough to leave to it (ALLY_SOLO_LEAVE).
     let my_range = me()?.attack_range()?;
@@ -1145,11 +1174,15 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
             return Ok(false);
         }
         for camp in &sight.camps {
-            if group_at(camp.spawn_position())? != Some(index) || !camp.is_awake().unwrap_or(false) {
+            if group_at(camp.spawn_position())? != Some(index) || !camp.is_awake().unwrap_or(false)
+            {
                 continue;
             }
             let range = camp.attack_range()?;
-            if reach.iter().any(|&(p, _)| distance(p, camp.spawn_position()) <= range + 1) {
+            if reach
+                .iter()
+                .any(|&(p, _)| distance(p, camp.spawn_position()) <= range + 1)
+            {
                 return Ok(true);
             }
         }
@@ -1219,10 +1252,7 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
         // Nearest any of its camps can be.
         let gap = distance(info.centre, here) - info.radius;
         // A solo group an ally is already farming (claims.rs).
-        if claim_bits != 0
-            && rally != Some(index)
-            && super::claims::claimed_by_ally(index, gap)?
-        {
+        if claim_bits != 0 && rally != Some(index) && super::claims::claimed_by_ally(index, gap)? {
             if previous_group == Some(index) {
                 previous_target_reason = Some("claimed-by-ally");
             }
@@ -1271,7 +1301,11 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                 if let Some(c) = cached {
                     c.far[index] = true;
                     c.dropped.push(index);
-                    let until = if respawning { ready[index] } else { super::collect::lost_until(index) };
+                    let until = if respawning {
+                        ready[index]
+                    } else {
+                        super::collect::lost_until(index)
+                    };
                     c.valid_until = c.valid_until.min(until.max(round + 1));
                 }
                 continue;
@@ -1321,7 +1355,11 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
         }
         // A cleared group in sight: what we see beats a message (respawns.rs). Post the round it's
         // back if we didn't know it was respawning, or if we're on its capture.
-        let seen_state = if seen && !any_live { Some(group.state()?) } else { None };
+        let seen_state = if seen && !any_live {
+            Some(group.state()?)
+        } else {
+            None
+        };
         if super::respawns::RESPAWN_SHARE {
             match seen_state {
                 Some(cambc::CampGroupState::Respawning(timer)) => {
@@ -1387,7 +1425,9 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                     continue;
                 }
                 // Gem-carry maps: the carry takes it (gemcarry.rs).
-                cambc::CampGroupState::RewardAvailable if super::gemcarry::leaves_to_carry(group)? => {
+                cambc::CampGroupState::RewardAvailable
+                    if super::gemcarry::leaves_to_carry(group)? =>
+                {
                     if previous_group == Some(index) {
                         previous_target_reason = Some("gem-carry-funnel");
                     }
@@ -1446,7 +1486,8 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
         // A cleared group has nothing left to fight: a loss judged while it was alive doesn't count.
         // Some members dead but the group not cleared: the rest are alive out of our sight (a bush).
         let hidden_alive = super::collect::PARTIAL_GROUPS && seen && !any_live && !reward;
-        let partly = super::collect::PARTIAL_GROUPS && (!seen_dead.is_empty() || damaged_camps.iter().any(|&(g, _)| g == index));
+        let partly = super::collect::PARTIAL_GROUPS
+            && (!seen_dead.is_empty() || damaged_camps.iter().any(|&(g, _)| g == index));
         let mut unwinnable = !reward
             && ((super::collect::recently_lost(index, round) && !partly)
                 || (any_live && super::collect::camp_fight_winnable(index)? == Some(false))
@@ -1469,8 +1510,13 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
             && (rally.is_none() || over)
             && !super::collect::follow_only()?
         {
-            super::rally::max_helpers(group, round)?
-                .map(|max| if info.jackpot && jackpot_live() { max.max(JACKPOT_MAX_HELPERS) } else { max })
+            super::rally::max_helpers(group, round)?.map(|max| {
+                if info.jackpot && jackpot_live() {
+                    max.max(JACKPOT_MAX_HELPERS)
+                } else {
+                    max
+                }
+            })
         } else {
             None
         };
@@ -1512,17 +1558,20 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
         // otherwise a melee champion standing on one counts as having arrived and never walks over
         // to the live camp out of reach (seen stuck for 65 turns).
         // With its live members out of sight, its goals are the tiles we can't see, to find them.
-        let is_goal = |c: &Camp| {
-            !((any_live || hidden_alive) && seen_dead.contains(&c.spawn_position()))
-        };
+        let is_goal =
+            |c: &Camp| !((any_live || hidden_alive) && seen_dead.contains(&c.spawn_position()));
         let ours_only = |c: &Camp| !info.span || our_half(c.spawn_position()).unwrap_or(true);
         if gap <= max_reach + vision
             && !enemy_reach.is_empty()
-            && group.camps().iter().filter(|c| is_goal(c) && ours_only(c)).any(|c| {
-                enemy_reach
-                    .iter()
-                    .any(|&(p, r)| distance(p, c.spawn_position()) <= r)
-            })
+            && group
+                .camps()
+                .iter()
+                .filter(|c| is_goal(c) && ours_only(c))
+                .any(|c| {
+                    enemy_reach
+                        .iter()
+                        .any(|&(p, r)| distance(p, c.spawn_position()) <= r)
+                })
         {
             if contest_ok(index) {
                 super::trace::trace("jackpot-contest");
@@ -1530,7 +1579,12 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                 if previous_group == Some(index) {
                     previous_target_reason = Some("enemy-can-reach-group");
                 }
-                if LURK && info.big && any_live && gap <= LURK_TILES && lurk_on(index, &enemy_reach)? {
+                if LURK
+                    && info.big
+                    && any_live
+                    && gap <= LURK_TILES
+                    && lurk_on(index, &enemy_reach)?
+                {
                     lurk.push((gap, index));
                 }
                 dropped.push(index);
@@ -1807,7 +1861,10 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                 }
             }
             let tiles = side.positions()?;
-            if steps.nearest(&tiles).is_some_and(|t| steps.steps(t) <= RALLY_SIDE_STEPS) {
+            if steps
+                .nearest(&tiles)
+                .is_some_and(|t| steps.steps(t) <= RALLY_SIDE_STEPS)
+            {
                 super::trace::trace("rally-side-camp");
                 rally_side = Some(side);
             }
@@ -1841,8 +1898,9 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                     for &tile in &rally_tiles {
                         regular.set(tile, false)?;
                     }
-                    let rally_steps =
-                        steps.nearest(&rally_tiles).map_or(i32::MAX, |t| steps.steps(t));
+                    let rally_steps = steps
+                        .nearest(&rally_tiles)
+                        .map_or(i32::MAX, |t| steps.steps(t));
                     let regular_steps =
                         steps.nearest(&regular.positions()?).map(|t| steps.steps(t));
                     // A help call (a fight in progress) has no wait: worth a few extra steps, if
@@ -2053,7 +2111,9 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     let plan = std::rc::Rc::new(FarmPlan { goals });
     RALLY_PLAN.with(|c| {
         *c.borrow_mut() = match (selection_reason, rally_now) {
-            ("rally", Some(group)) if RALLY_REUSE_ROUNDS > 0 => Some((round, group, here, plan.clone())),
+            ("rally", Some(group)) if RALLY_REUSE_ROUNDS > 0 => {
+                Some((round, group, here, plan.clone()))
+            }
             _ => None,
         }
     });
@@ -2130,7 +2190,9 @@ fn wait_outside_awake_camps(goals: Bitboard) -> Result<Bitboard> {
     if goals_in_danger.is_empty()? && !danger.is_set(here)? {
         return Ok(goals);
     }
-    let free = super::world::blocked_tiles()?.union(&danger)?.complement()?;
+    let free = super::world::blocked_tiles()?
+        .union(&danger)?
+        .complement()?;
     let mut outside = Bitboard::new()?;
     for tile in goals_in_danger.positions()? {
         outside.draw_chebyshev(tile, (reach + 1) as f32)?;

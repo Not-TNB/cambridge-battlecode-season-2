@@ -22,9 +22,7 @@ const ALONE_ALLY_TILES: i32 = 6;
 
 pub(super) fn dash_at_chase_target(enemies: &[Champion]) -> Result<bool> {
     // A landing-damage dash is kept for when an enemy is in its reach (attack::IMPACT_DASH).
-    if !DASH_CHASE
-        || (super::attack::IMPACT_DASH && super::movement::impact_radius().is_some())
-    {
+    if !DASH_CHASE || (super::attack::IMPACT_DASH && super::movement::impact_radius().is_some()) {
         return Ok(false);
     }
     let Some(dash) = ready_dash()? else {
@@ -255,7 +253,9 @@ pub(super) fn choose_chase_step(enemies: &[Champion]) -> Result<Option<Vec2>> {
         let here = me()?.position()?;
         let mut near = false;
         for ally in &super::world::sight()?.allies {
-            near |= ally.position().is_ok_and(|p| distance(p, here) <= ALONE_ALLY_TILES);
+            near |= ally
+                .position()
+                .is_ok_and(|p| distance(p, here) <= ALONE_ALLY_TILES);
         }
         !near
     };

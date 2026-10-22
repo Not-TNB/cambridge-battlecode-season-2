@@ -33,7 +33,9 @@ pub fn quiet_for(rounds: u32) -> Result<bool> {
         LAST_ENEMY_SEEN.with(|l| l.set(Some(round)));
         return Ok(false);
     }
-    Ok(LAST_ENEMY_SEEN.with(|l| l.get()).is_none_or(|seen| round >= seen + rounds))
+    Ok(LAST_ENEMY_SEEN
+        .with(|l| l.get())
+        .is_none_or(|seen| round >= seen + rounds))
 }
 
 // Record every enemy in sight. Call once per acting turn.
@@ -240,7 +242,11 @@ pub fn fled(index: usize) -> bool {
         return false;
     }
     let round = cambc::round_number().unwrap_or(0);
-    FLED.with(|f| f.borrow().iter().any(|&(g, until)| g == index && round < until))
+    FLED.with(|f| {
+        f.borrow()
+            .iter()
+            .any(|&(g, until)| g == index && round < until)
+    })
 }
 
 // On our spawn, healed: no group is still to be avoided.
@@ -338,8 +344,14 @@ fn escape_camps() -> Result<bool> {
     let mut camps = Vec::new();
     for camp in &sight.camps {
         // Within a range and two steps of us: any we could step into.
-        if distance(camp.spawn_position(), here) <= MAX_CAMP_RANGE + 2 && camp.is_awake().unwrap_or(false) {
-            camps.push((camp.spawn_position(), camp.attack_range()?, camp.strength()?));
+        if distance(camp.spawn_position(), here) <= MAX_CAMP_RANGE + 2
+            && camp.is_awake().unwrap_or(false)
+        {
+            camps.push((
+                camp.spawn_position(),
+                camp.attack_range()?,
+                camp.strength()?,
+            ));
         }
     }
     let exposure = |tile: Vec2| -> f32 {
@@ -458,7 +470,10 @@ pub fn retreat_and_recall() -> Result<()> {
     super::trace::checkpoint("recall-threats");
     let here = me.position()?;
     let zone = interrupt_zone()?;
-    let in_zone = |tile: Vec2| zone.as_ref().is_some_and(|z| z.is_set(tile).unwrap_or(false));
+    let in_zone = |tile: Vec2| {
+        zone.as_ref()
+            .is_some_and(|z| z.is_set(tile).unwrap_or(false))
+    };
     // A bush close by, safe for the channel and away from an interrupted recall: recall there.
     if BUSH_RECALL_TILES > 0 && !cambc::map::bushes()?.is_set(here)? && me.can_move()? {
         let mut bush = cambc::map::bushes()?.clone();
@@ -494,8 +509,11 @@ pub fn retreat_and_recall() -> Result<()> {
     // than standing still, and we stood in an elk's range until it killed us (19% of our deaths,
     // carrying the most gems). Then take the shortest way to safety. Off: stand still.
     let moved = moved
-        || (RETREAT_UNSTICK && super::me()?.can_move()? && move_towards_closest_with_pull(safe, |_| 0.0, true)?);
-    if moved && (!safe_for(&threats, me.position()?, RECALL_SAFE_TURNS) || in_zone(me.position()?)) {
+        || (RETREAT_UNSTICK
+            && super::me()?.can_move()?
+            && move_towards_closest_with_pull(safe, |_| 0.0, true)?);
+    if moved && (!safe_for(&threats, me.position()?, RECALL_SAFE_TURNS) || in_zone(me.position()?))
+    {
         trace("retreat");
         return Ok(()); // keep walking next turn
     }
@@ -570,7 +588,9 @@ pub fn retreat_from_fight() -> Result<bool> {
     // than standing still, and we stood in an elk's range until it killed us (19% of our deaths,
     // carrying the most gems). Then take the shortest way to safety. Off: stand still.
     let moved = moved
-        || (RETREAT_UNSTICK && super::me()?.can_move()? && move_towards_closest_with_pull(safe, |_| 0.0, true)?);
+        || (RETREAT_UNSTICK
+            && super::me()?.can_move()?
+            && move_towards_closest_with_pull(safe, |_| 0.0, true)?);
     if moved {
         trace("retreat-fight");
     }
