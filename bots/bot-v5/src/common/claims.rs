@@ -14,6 +14,7 @@ use cambc::{Result, Vec2};
 use std::cell::{Cell, OnceCell};
 
 // Off: no claims (allies may all head for the same group).
+// 2026-10-22 (v5), one game a map: 20/40 against off, gold -5%. Off.
 pub const CLAIMS: bool = false;
 const OFFSET: usize = 2;
 const BITS: usize = 24;

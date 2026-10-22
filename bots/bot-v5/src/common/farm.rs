@@ -315,7 +315,10 @@ const NEAR_ALLY_TILES: i32 = 5;
 // spreading over the map, so the fights it meets are fought by several of us. 0.0: off.
 // 2026-10-21 against v3: 0.5 won 138/264 (6 seeds; gold +5.5%, gems tributed +8%, kills +20%,
 // deaths -11%); 1.0 won 66/132.
-pub const PACK_WEIGHT: f32 = 0.5;
+// 2026-10-22 (v5, ladder: champions grouped on 00expanse where every camp is soloable), 0.0 against
+// 0.5, one game a map, two seeds: 20/40 and 22/40, gold +1% and +20%, gems tributed +7% and +19%,
+// gems lost on death 80 and 100 against 141 and 119. Off.
+pub const PACK_WEIGHT: f32 = 0.0;
 const PACK_RADIUS: i32 = 6;
 const PACK_UNTIL_ROUND: u32 = 1200;
 
@@ -743,6 +746,21 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+// Rally waiting: a plan that sent us to a rally is kept for up to RALLY_REUSE_ROUNDS rounds while
+// that rally is still on, we haven't moved (we're there, waiting) and no enemy is in sight. The
+// plan key holds every ally's tile, and allies walking in changed it every turn, so a champion
+// standing at a rally rebuilt its plan (~50k fuel) every turn: 36% of the turns that ran out of
+// fuel had a rally on, and none of them reused a plan (2026-10-22, 40 traced games). 0: off.
+// 2026-10-22, 5 rounds, one game a map against off: 16/40, fuel-exhausted turns unchanged (323
+// against 322 per 1,000 rounds): the waiting champions weren't where the fuel went. Off.
+pub const RALLY_REUSE_ROUNDS: u32 = 0;
+
+thread_local! {
+    // (round built, rally group, our tile, plan)
+    static RALLY_PLAN: std::cell::RefCell<Option<(u32, usize, Vec2, std::rc::Rc<FarmPlan>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 // Walking reuse: on the way to goals out of sight, the last plan is kept while nothing it looks at
 // in sight has changed (the camp tiles we see and the live camps' health, the rally, the team
 // target, our health, the phase) and no enemy is in sight, for up to WALK_REUSE_ROUNDS rounds. The
@@ -884,6 +902,22 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     }
     // A plan from the last few rounds, if nothing it looks at has changed since. A failed read
     // (a unit can drop out of vision mid-turn) just means building a new plan.
+    if RALLY_REUSE_ROUNDS > 0 && sight()?.enemies.is_empty() {
+        let rally = super::rally::active()?;
+        let kept = RALLY_PLAN.with(|c| {
+            c.borrow()
+                .as_ref()
+                .filter(|(built, group, at, _)| {
+                    round < built + RALLY_REUSE_ROUNDS && Some(*group) == rally && *at == here
+                })
+                .map(|(_, _, _, plan)| plan.clone())
+        });
+        if let Some(plan) = kept {
+            FARM_PLAN.with(|c| *c.borrow_mut() = Some((round, here, plan.clone())));
+            super::trace::trace("farm-plan-rally-kept");
+            return Ok(plan);
+        }
+    }
     let key = plan_key(here, round).ok();
     if let Some(plan) = key.as_ref().and_then(|key| {
         PLAN_REUSE.with(|c| {
@@ -2017,6 +2051,12 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
     super::capclaim::heading_for(claim)?;
     checkpoint("plan-target");
     let plan = std::rc::Rc::new(FarmPlan { goals });
+    RALLY_PLAN.with(|c| {
+        *c.borrow_mut() = match (selection_reason, rally_now) {
+            ("rally", Some(group)) if RALLY_REUSE_ROUNDS > 0 => Some((round, group, here, plan.clone())),
+            _ => None,
+        }
+    });
     FARM_PLAN.with(|c| *c.borrow_mut() = Some((round, here, plan.clone())));
     // Only a plan heading out of sight can be kept while walking (and only without enemies).
     if WALK_REUSE {

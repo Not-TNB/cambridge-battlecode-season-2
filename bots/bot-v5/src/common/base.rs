@@ -82,6 +82,19 @@ pub const OPEN_ALTARS_ONLY: bool = true;
 // A gate camp's group known to be respawning (farm::respawn_ready) opens its altar while there's
 // at least the walk there plus this many rounds left of the respawn.
 const GATE_MARGIN_ROUNDS: u32 = 5;
+// Queue at a gate: an ally tributing on the gate tile doesn't close the altar for us; we wait on
+// another tile of the gate camp's group within GATE_QUEUE_TILES of the altar and step on when the
+// gate frees. Standing on a group's tile holds its respawn off, so the queue keeps the altar open
+// for as long as we have gems. On 01boss-battle (one altar, gated by a monolith pair) we kept
+// 1,200-1,500 gems a game untributed: one champion at a time (a turn per 10 gems), the rest went
+// back to farming, and the monoliths respawned the moment the gate was left. Off: an ally on the
+// gate closes it for us.
+// 2026-10-22, 01boss-battle against v4, 3 seeds both sides: 6/6 against 5/6 off, but tributes
+// 637 and 1,118 a game against 940 and 992, carried at the end about the same (~1,450): the
+// monoliths die late (first kill round 1,046-1,977, none in 3 of 12 games), so the gate is shut
+// most of the game whatever we do at it. Off.
+pub const GATE_QUEUE: bool = false;
+const GATE_QUEUE_TILES: i32 = 2;
 
 // Each altar we could ever tribute at, with the camp tiles (and groups) next to it that it depends
 // on: none if a floor tile is next to it. Worked out once.
@@ -156,10 +169,14 @@ fn gate_open(altar: Vec2, gates: &[(Vec2, usize)]) -> Result<bool> {
             // A gate is one tile: another champion on it (an ally's tribute takes a turn per 10
             // gems) means queueing, so keep farming until it's free.
             let mut taken = sight.camps.iter().any(|c| c.spawn_position() == tile);
-            for champion in sight.allies.iter().chain(&sight.enemies) {
+            for champion in sight.enemies.iter() {
                 taken |= champion.position().is_ok_and(|p| p == tile);
             }
-            if !taken {
+            let mut ally_on = false;
+            for champion in sight.allies.iter() {
+                ally_on |= champion.position().is_ok_and(|p| p == tile);
+            }
+            if !taken && (!ally_on || (GATE_QUEUE && !queue_tiles(altar, gates)?.is_empty()?)) {
                 return Ok(true);
             }
             continue;
@@ -169,6 +186,36 @@ fn gate_open(altar: Vec2, gates: &[(Vec2, usize)]) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+// Free tiles of `altar`'s gate groups within GATE_QUEUE_TILES of it, other than the gate tiles in
+// tribute range: where we wait for an ally on the gate (GATE_QUEUE). Only tiles we see.
+fn queue_tiles(altar: Vec2, gates: &[(Vec2, usize)]) -> Result<Bitboard> {
+    let sight = super::world::sight()?;
+    let range = cambc::constants().submit_gems_range;
+    let groups = super::world::camp_groups()?;
+    let here = me()?.position()?;
+    let mut tiles = Bitboard::new()?;
+    for &(_, group) in gates {
+        for camp in groups[group].camps() {
+            let p = camp.spawn_position();
+            let d = distance(p, altar);
+            if d <= range || d > GATE_QUEUE_TILES || !sight.visible.is_set(p)? {
+                continue;
+            }
+            if sight.camps.iter().any(|c| c.spawn_position() == p) {
+                continue;
+            }
+            let mut taken = false;
+            for champion in sight.allies.iter().chain(&sight.enemies) {
+                taken |= champion.position().is_ok_and(|q| q == p);
+            }
+            if !taken || p == here {
+                tiles.set(p, true)?;
+            }
+        }
+    }
+    Ok(tiles)
 }
 
 // Tribute at an altar in range, otherwise walk toward the nearest unlocked altar.
@@ -252,6 +299,12 @@ pub fn bank_gems() -> Result<()> {
         }
         if allowed {
             goals.draw_chebyshev(altar, range as f32)?;
+            // An ally on the gate: wait on a queue tile beside it (GATE_QUEUE).
+            if GATE_QUEUE {
+                if let Some((_, gates)) = altar_access()?.iter().find(|(a, g)| *a == altar && !g.is_empty()) {
+                    goals.union_assign(&queue_tiles(altar, gates)?)?;
+                }
+            }
         } else {
             fallback.draw_chebyshev(altar, range as f32)?;
         }
@@ -292,6 +345,8 @@ pub fn bank_gems() -> Result<()> {
 // so leaving spawn doesn't turn into a walk to the altar for a small bag. 1 banks whenever we
 // carry gems. 40 tested neutral on win rate and halves bank walking (writeup entry 18).
 pub const BANK_MIN_GEMS: u32 = 40;
+// 2026-10-22: 0 (no small bags near an altar) 16/40 against 6, tributes 567 against 787; with
+// BANK_MIN_GEMS 60 as well 18/40 (trips 12 a game against 26, but gems lost on death +48%).
 pub const BANK_NEAR_TILES: i32 = 6;
 // Where the nearest altar is more than BANK_FAR_ALTAR_STEPS steps away on foot, bank only from
 // BANK_FAR_MIN_GEMS: on spine (altars at the far ends of the map) banking every 40 gems made walks

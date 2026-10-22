@@ -113,6 +113,13 @@ fn calc_balance() -> Result<[f64; CLASS_COUNT]> {
 // old weights: 190-130, gems tributed +13%, deaths 12.2 against 16.0.
 pub const SMALL_TEAM_MAX: usize = 5;
 
+// Heart of Ruin over Varg (the user, 2026-10-22): Varg was drafted more often (five champions:
+// Varg 0.25, Heart 0.1), while the ladder's opponents take Heart in most of their games. On: the two
+// swap weights where Varg's was higher (three and five champions). Off: the tables as they are.
+// 2026-10-22, one game a map against bot-v5 without it: 24/40 and 21/40 (gold a round +16% and
+// +19%, deaths 12.7 and 11.4 against 16.4, tributes +7% and +13%).
+pub const HEART_OVER_VARG: bool = true;
+
 // One AD carry first (Vesper over Tavi; with four, a second one is welcome), at most one AP and one
 // assassin, no Cassi & Issac; with three also a frontline (tank or bruiser) by the last pick and no
 // Willow. Weights roughly follow the win rates above.
@@ -152,6 +159,13 @@ fn small_team_weight(p: ChampionDraft, mine: &[ChampionDraft], left: usize, size
             D::Vendetta => 0.15,
             D::CassiAndIssac => 0.0,
         }
+    };
+    let base = match p {
+        D::HeartOfRuin if HEART_OVER_VARG && size <= 3 => 0.15,
+        D::Varg if HEART_OVER_VARG && size <= 3 => 0.1,
+        D::HeartOfRuin if HEART_OVER_VARG && size >= 5 => 0.25,
+        D::Varg if HEART_OVER_VARG && size >= 5 => 0.1,
+        _ => base,
     };
     let class = draft_class(p);
     let count = |k: ClassKind| mine.iter().filter(|&&m| draft_class(m) == k).count();

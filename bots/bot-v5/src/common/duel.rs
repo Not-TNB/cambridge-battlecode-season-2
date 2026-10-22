@@ -1,6 +1,6 @@
 // Duel estimates: whether we beat an enemy 1v1 after walking to it, with allies and enemies
 // joining, and the per-turn fight view they share.
-use super::attack::is_damaging;
+
 use super::chase::MAX_CHASE_STEPS;
 use super::me;
 use super::movement::WalkGrid;
@@ -158,6 +158,7 @@ pub fn plan_duel(
             }
         }
     }
+    incoming *= super::mitigation::incoming(me);
     checkpoint("duel-total-dps");
     let Ok(target_hp) = enemy.health() else {
         return Ok(None);
@@ -186,25 +187,10 @@ fn rounds_to_defeat(hp: f32, damage_per_turn: f32) -> u32 {
 }
 
 // Estimate damage per turn as a basic attack plus one eighth of each damaging ability/reset.
+// Our damage a turn against `enemy` (dps.rs: basic attacks through its Durability, spells as the
+// engine predicts them against it).
 fn turn_damage_against(enemy: &Champion) -> Result<f32> {
-    let me = me()?;
-    let strength = me.strength()?;
-    let mut damage = strength;
-    for ability in me.abilities() {
-        if ability.info()?.is_none() {
-            continue;
-        }
-        let per_turn = 1.0 / 8.0;
-        if ability.is_attack_reset() {
-            damage += strength * per_turn;
-        } else if is_damaging(ability) {
-            damage += ability
-                .damage_amount_against(enemy)
-                .or_else(|_| ability.damage_amount())?
-                * per_turn;
-        }
-    }
-    Ok(damage)
+    super::dps::turn_damage(me()?, Some(enemy))
 }
 
 // What the fight decisions share within a turn: threats, allies, blocked tiles and walking distances

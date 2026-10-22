@@ -140,6 +140,12 @@ fn fight_visible(enemies: &[Champion]) -> Result<bool> {
         return Ok(true);
     }
     checkpoint("fight-kite");
+    // Two or more on each side: the whole fight decides, not one duel (teamfight.rs).
+    if let Some(verdict) = super::teamfight::verdict(enemies)? {
+        if super::teamfight::act(verdict, enemies)? {
+            return Ok(true);
+        }
+    }
     if FLEE_LOSING_FIGHTS && losing_fight(enemies)? {
         checkpoint("fight-losing-yes");
         if super::safety::retreat_from_fight()? {

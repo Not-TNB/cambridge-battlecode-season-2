@@ -265,10 +265,17 @@ pub fn enemy_threats_of(enemy: &Champion, threats: &mut Vec<Threat>) -> Result<(
     } else {
         0
     };
+    // Averaged over 8 turns (dps.rs): fewer basic attacks for its spells, its resets and damage
+    // passives folded into the basic-attack threat.
+    let basic = if super::dps::AVERAGED {
+        super::dps::parts(enemy, None)?.0
+    } else {
+        strength
+    };
     threats.push(Threat {
         origin,
         range: attack_range,
-        damage: strength,
+        damage: basic,
         speed,
         shield: None,
     });
@@ -277,6 +284,9 @@ pub fn enemy_threats_of(enemy: &Champion, threats: &mut Vec<Threat>) -> Result<(
             continue;
         };
         let per_turn = 1.0 / info.as_dyn().max_cooldown().max(1) as f32;
+        if ability.is_attack_reset() && super::dps::AVERAGED {
+            continue;
+        }
         if ability.is_attack_reset() {
             threats.push(Threat {
                 origin,

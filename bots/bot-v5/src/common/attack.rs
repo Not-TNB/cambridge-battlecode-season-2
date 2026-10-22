@@ -230,16 +230,32 @@ pub fn cast_at_enemy(ability: &Ability, enemy: &Champion) -> Result<bool> {
 
 // Basic attack, then a ready damaging ability, else an attack reset to attack a second time.
 // After a move (`moved`), abilities that exclude walking are skipped. Returns whether we acted.
+// Targets: an enemy we can kill outright (with a basic attack, or with the spell) first; otherwise
+// a stun goes on the enemy dealing the most damage a turn (dps.rs), other spells and basic attacks
+// keep the order they're given. Off: the order given, for everything.
+// 2026-10-22, one game a map against off: 20/40, gold 5.91 a round against 5.08, tributes +6%,
+// deaths 12.8 against 15.8, kills 13.7 against 10.3.
+pub const STUN_HIGHEST_DAMAGE: bool = true;
+
 pub fn strike(enemies: &[Champion], moved: bool) -> Result<bool> {
+    let me = me()?;
+    // A basic attack that kills goes first.
+    let mut order: Vec<&Champion> = enemies.iter().collect();
+    if STUN_HIGHEST_DAMAGE {
+        let strength = me.strength()?;
+        order.sort_by_key(|e| {
+            let hp = e.health().unwrap_or(f32::MAX);
+            hp > strength * super::mitigation::incoming(e)
+        });
+    }
     let mut attacked = None;
-    for enemy in enemies {
+    for enemy in order.iter().copied() {
         if attack_if_in_range(enemy)? {
             attacked = Some(enemy);
             break;
         }
     }
 
-    let me = me()?;
     if !me.can_cast()? {
         return Ok(attacked.is_some());
     }
@@ -254,7 +270,25 @@ pub fn strike(enemies: &[Champion], moved: bool) -> Result<bool> {
         {
             continue;
         }
-        for enemy in enemies {
+        let mut order: Vec<&Champion> = enemies.iter().collect();
+        if STUN_HIGHEST_DAMAGE {
+            // (not killable by this spell, -damage a turn if it's a stun): kills first, then the
+            // hardest hitter for a stun.
+            let mut keyed = Vec::with_capacity(order.len());
+            for e in order {
+                let hp = e.health().unwrap_or(f32::MAX);
+                let hit = ability.damage_amount_against(e).or_else(|_| ability.damage_amount()).unwrap_or(0.0);
+                let threat = if ability.is_cc() {
+                    super::dps::turn_damage(e, None).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                keyed.push((hit < hp, -threat, e));
+            }
+            keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+            order = keyed.into_iter().map(|(_, _, e)| e).collect();
+        }
+        for enemy in order {
             if cast_at_enemy(ability, enemy)? {
                 return Ok(true);
             }

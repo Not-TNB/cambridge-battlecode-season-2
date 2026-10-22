@@ -253,12 +253,15 @@ fn fight_context() -> Result<FightContext> {
                 cached_camp_damage(ally, round)?,
                 ally.max_health()?,
             );
+            // Camp damage through its Jungle and Durability emblems (mitigation.rs): its spare
+            // health counts for that much more.
+            let toughness = 1.0 / super::mitigation::from_camps(ally);
             helpers.push((
                 ally.position()?,
                 range,
                 damage,
-                ally.health()?,
-                CAMP_FIGHT_HP_FLOOR * max_health,
+                ally.health()? * toughness,
+                CAMP_FIGHT_HP_FLOOR * max_health * toughness,
             ));
             let name = ally.champion_name()?;
             in_sight.push(name);
@@ -274,8 +277,8 @@ fn fight_context() -> Result<FightContext> {
         range: me.attack_range()?,
         helpers,
         in_sight,
-        hp: me.health()?,
-        floor: CAMP_FIGHT_HP_FLOOR * me.max_health()?,
+        hp: me.health()? / super::mitigation::from_camps(me),
+        floor: CAMP_FIGHT_HP_FLOOR * me.max_health()? / super::mitigation::from_camps(me),
         verdicts: vec![None; camp_groups()?.len()],
     })
 }

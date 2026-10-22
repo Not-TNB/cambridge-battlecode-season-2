@@ -8,3 +8,4 @@ bots/*/target/
 sdk/rust/Cargo.lock
 sdk/rust/target/
 bots/old-bot
+*.zip
