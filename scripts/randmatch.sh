@@ -32,7 +32,8 @@ while [ $# -gt 0 ]; do
 done
 case $trace in ""|on|off) ;; *) echo "--trace takes on or off" >&2; exit 2 ;; esac
 if [ -z "$map" ]; then
-  map=$(ls maps/*.map26a | sed 's#maps/##; s#\.map26a$##' | shuf -n 1)
+  map=$(ls maps/*.map26a | sed 's#maps/##; s#\.map26a$##' |
+    awk -v seed="$(od -An -N4 -tu4 /dev/urandom)" 'BEGIN { srand(seed) } { m[NR] = $0 } END { print m[int(rand() * NR) + 1] }')
 fi
 
 copies=""
@@ -70,16 +71,18 @@ seeded() {
     [ -e "bots/$bot/$item" ] && cp -r "bots/$bot/$item" "bots/$copy/"
   done
   if [ $has_seed = yes ]; then
-    sed -i -E "s/const SEED: u64 = 0x[0-9a-fA-F_]+;/const SEED: u64 = 0x$seed;/" "bots/$copy/src/main.rs"
+    sed -i.bak -E "s/const SEED: u64 = 0x[0-9a-fA-F_]+;/const SEED: u64 = 0x$seed;/" "bots/$copy/src/main.rs"
+    rm -f "bots/$copy/src/main.rs.bak"
     echo "$bot seed: 0x$seed" >&2
   fi
   if [ $has_trace = yes ]; then
     file="bots/$copy/$trace_file"
     if [ "$trace" = off ]; then
-      sed -i -E 's/^(pub const TRACE: bool = )true;/\1false;/; s/^((pub(\(super\))? )?const FARM_TARGET_DIAGNOSTICS: bool = )true;/\1false;/' "$file"
+      sed -i.bak -E 's/^(pub const TRACE: bool = )true;/\1false;/; s/^((pub(\(super\))? )?const FARM_TARGET_DIAGNOSTICS: bool = )true;/\1false;/' "$file"
     else
-      sed -i -E 's/^(pub const TRACE: bool = )false;/\1true;/' "$file"
+      sed -i.bak -E 's/^(pub const TRACE: bool = )false;/\1true;/' "$file"
     fi
+    rm -f "$file.bak"
   fi
   echo "$copy"
 }
