@@ -772,6 +772,342 @@ Each was off by default and lost (or did nothing) when tested; the code is gone 
 
 ---
 
+## 34. bot-v7: what decides top ladder games (analysis, no code)
+**Commit:** Uncommitted (`bots/bot-v7` is a copy of `bots/bot-v6`)
+
+- **What:** 6,952 games from the summaries zip of 2026-10-21 (`summaries-2026-10-21-part19.zip`, ranked games with both teams in the current top 150, unranked scrims between top-100 teams), converted offline with `cambc summary`.
+- **Results:**
+  - The team ahead on **gold earned** wins 68% of games at round 150, 74% at 300 and 79% at 500. A lead of more than 50% at round 300 wins 89%.
+  - Held against the other stats in a regression, gold counts about twice as much as gems and four times as much as kills up to round 300. Gems collected overtake gold from round 500.
+  - Ahead on emblems built: 75% at round 300. First emblem: 63%. First kill: 62%. First camp clear: 51%. Wards, healing and fuel-exhausted turns barely matter.
+  - More captures worth 20+ gems: 78–83%.
+  - Champions (win rate when only one team has them): Heart of Ruin 56% (picked by 73% of top teams), Vendetta 54, Vesper 54, Marcella 53, Ryth 53 … Prism 47, Cassi 46, Varg 44, Stellar 43.
+  - Classes: no AP 57% against one AP 43%. Exactly one AD 54% against two AD 47%.
+- **Our 100 ladder games for comparison:** gold by round 300 equal to our opponents (1,074) but 18% under the top 20 (1,265). Gems by round 300 105 against 126. Fuel-exhausted turns 548 a game against about 40 for everyone else.
+
+---
+
+## 35. Gate siege on 01boss-battle (`collect::GATE_SIEGE`, off)
+**Commit:** Uncommitted
+
+- **The map:** a wall across the middle (rows 19–21) whose only gaps are the two monolith tiles (23,20) and (24,20) (one group: 20,000 health each, hit for 200 at range 5, 400 gems and 600 gold for the pair, 150-round respawn). The only altar (25,20) sits in the wall, and the only tile within tribute range we can stand on is the monolith at (24,20). Nobody tributes until a monolith dies, and the two halves only meet through dead monoliths.
+- **Why the monoliths died late (rounds 1,046–1,977, or never):** the camp-fight check wants the whole pair killed in one go before anyone falls to their retreat floor. On top of that, `safety::ESCAPE_ANY_HP` sent a melee champion home once its health was under six hits of 400 (2,400). That's more than most champions have, and `FLEE_COMMIT_ROUNDS` then kept the group off its goals for 30 rounds.
+- **Measured:** camps don't heal. A monolith hit to 19,280 stayed there for 90 rounds.
+- **What changed:** a group that gates an altar (`base::is_gate_group`, computed from the map's altar access) counts a fight that does `GATE_SIEGE_SHARE` (30%) of the work as a win. Variants:
+  - `GATE_SIEGE_ONE_HITTER`: the escape reserve counts one camp hitting us, not both.
+  - `GATE_SIEGE_NO_RESERVE`: no escape reserve.
+  - Gate rallies from round 150 (`GATE_RALLY_FROM_ROUND`), joined up to 30 steps further than the nearest camp.
+- **Results** (01boss-battle against bot-v5, 8 seeds × both sides = 16 games each):
+  - With the one-hitter reserve and shielded escape (entry 36), our first monolith kill came at a median round **1,008 against 1,959**, and we killed it first in 11 of 16 games.
+  - But only 9/16 wins, against 8/16 for no change. The damage we left on the monolith let v5 finish it as well, and the team farmed less (gold −20%).
+  - With the gate guard (entry 37): 12/16 with or without the siege.
+  - **Off.** 8-game runs on this map swung from 4/8 to 7/8 for the same bot, so only 16-game runs are quoted.
+- **Open questions / follow-ups:** a siege only pays if we also hold the gate the moment it falls. One idea is to siege only once the guard is ready, and only while the enemy isn't damaging the same monolith.
+
+---
+
+## 36. Shielded escape (`safety::SHIELDED_ESCAPE`, on)
+**Commit:** Uncommitted
+
+- **What changed:** camps hit the closest champion in their range (`threats::CAMPS_HIT_CLOSEST`, on since v3). So in the low-health retreat check (`low_hp_recall`), a camp with another champion (ally or enemy) strictly closer to it no longer counts against us. A camp that is hitting us only does so until we're further from it than the next closest champion. The escape cost is the steps to get behind them, not out of the camp's whole range.
+- **Why:** with allies beside it, a melee champion next to a monolith still left at 2,400 health, and ranged champions behind a tank left elk fights early.
+- **Results** (against bot-v5, one game a map, 4 seeds = 160 games): **111/160 against 105/160 off**. Gold 6.33 a round against 6.13, deaths 10.5 against 11.2, kills 14.4 against 14.1. On 01boss-battle (16 games) 8/16 either way, but we tribute 321 gems a game against 118.
+
+---
+
+## 37. Gate guard and gate queue on 01boss-battle (`base::GATE_GUARD`, `base::GATE_QUEUE`, both on)
+**Commit:** Uncommitted
+
+- **What changed:**
+  - Where every altar is gated, once a gate group is down our tank (else first bruiser) stands on one of its tiles outside tribute range, (23,20) on boss-battle. An occupied tile holds the whole group's respawn off, so the altar stays open while the rest tribute through the gate tile, and the guard blocks the way through the wall.
+  - Champions remember a gate they saw down as open until they see it alive again. Its respawn round passes while the guard holds it, so the respawn message alone would close it.
+  - `GATE_QUEUE` (from v5, off there) lets a champion with gems wait on another tile of the gate group while an ally tributes.
+- **Results** (01boss-battle against bot-v5, 16 games each, shielded escape on): guard **12/16 against 8/16** (tributes 587 a game against 321; v5's 205 against 309). Guard + queue 12/16 (tributes 645 against v5's 177). Queue alone 10/16.
+
+---
+
+## 38. Chasing alone (`chase::ALONE_CHASE_MARGIN` 3 → 2) and other kill tests
+**Commit:** Uncommitted
+
+- **What changed:** alone (no ally within 6 tiles), we chase an enemy the duel says we kill 2 turns before it would kill us (was 3).
+- **Results** (against bot-v5, 160 games each, shielded escape on): **margin 2: 117/160 against 111/160** at 3. Kills 15.2 a game against 14.4, deaths 10.2 against 10.5, gold 6.42 a round against 6.33.
+- **Tested and off:**
+  - Following a lost chase target for 6 rounds instead of 3 (`CHASE_MEMORY_ROUNDS`): 113/160, kills unchanged.
+  - Team-fight bounty (`teamfight::TEAMFIGHT_BOUNTY_GEMS`: an even trade is also a fight when the enemy bags we'd take beat ours by 200 gems; enemy bags are readable with `Champion::gem_count`): 24/40 against 31/40 off, kills unchanged.
+
+---
+
+## 39. Fewer fuel-exhausted turns (`farm::STALE_PLAN_ROUNDS`, `RALLY_DECISION_ROUNDS`, `STALE_SKIP_AT_GOAL`)
+**Commit:** Uncommitted
+
+- **Where turns go** (activity log, 10 games):
+  - walking to camps 36.5%, hitting camps 12.6%;
+  - idle 7.7%, mostly capture holding and stale plans;
+  - fuel stalls 6.3%, capturing 6.3%.
+- **Where cut-off turns run out:** about 74% are farm turns, and nearly every one rebuilds the farm plan. The group loop costs about 29k of the 100k turn, target choice about 24k, the rally join decision about 15k and the camp-fight context about 21k.
+- **What changed** (160 games each against bot-v5, one game a map, 4 seeds; baseline 111/160 with fuel-exhausted turns at 171 per 1,000 rounds):
+  - **`STALE_PLAN_ROUNDS` 3 → 5:** a turn with under 85k fuel left at the farm step keeps walking the last plan's goals for up to 5 rounds instead of 3. Against bot-v5: **112/160**, timeouts 148 (−13%), gold 6.35 a round against 6.33, deaths 10.2 against 10.5. But head to head against bot-v6 (same draft, seeds 1001–1004), bot-v7 won 76/160 with it and **97/160 without it** (gold 5.85 a round against 5.52): kept plans lose contested camps to a bot that replans. **Reverted to 3** (entry 40). Fresher plans against bot-v6 (same seeds, 3: 83/160): 2 rounds 88/160 and 1 round 87/160 (noise), with timeouts 176 and 196 against about 150.
+  - **`RALLY_DECISION_ROUNDS` 5 → 15:** a rally join-or-skip decision (a second goals pass, about 15k) is kept for 15 rounds. **119/160**, timeouts 154 (−10%), gold 6.52, deaths 9.9, kills 15.3. **On.**
+  - Both together on the same seeds: 114/160, timeouts 124 (−27%), but deaths 11.7. On fresh seeds against bot-v5: 113/160 against 108/160 for the rally change alone. Head to head against bot-v6 the stale-plan change lost (above).
+  - **`STALE_SKIP_AT_GOAL`** (drop a kept plan whose goals include our own tile: after a capture paid out, the carry stood on the tile 2–3 turns for the kept plan): 107/160, no change in timeouts or gold. **Off.**
+- **Open questions / follow-ups:** the plan's group loop and the camp-fight context are still most of a cut-off turn. Reusing the camp-fight context across rounds while nothing in sight changes is the next candidate.
+
+---
+
+## 40. bot-v7 against bot-v6, and gem-carry off
+**Commit:** Uncommitted
+
+- **Gem-carry off** (`gemcarry::GEM_CARRY`, entry for v5's gem-carry in its code comment):
+  - On the six gem-carry maps against bot-v5 (4 seeds): off **17/24** against 12/24 on (gold against v5 1.24 against 0.96).
+  - Against bot-v6 (which has it on) it's even: off 16/24 against 14/24 on (paired seeds), and 21/48 on fresh seeds.
+  - The ladder data (entry 34) favours drafts without an AP champion. **Off**, but not settled.
+- **Head to head against bot-v6** (bot-v6 = Tristan's allocator, partial sight, dense group lookup and meta draft; bot-v7 = entries 36–39 on top):
+  - The first candidate (with `STALE_PLAN_ROUNDS` 5) was **158/320**: even.
+  - A revert-one-at-a-time ablation against bot-v6 (160 games each, seeds 1001–1004; candidate 76/160):
+
+    | Reverted | Wins |
+    |---|---|
+    | Rally decision back to 5 | 77 |
+    | **Stale plans back to 3** | **97** |
+    | Shielded escape off | 83 |
+    | Chase margin back to 3 | 75 |
+    | Gem-carry back on | 73 |
+
+    Only the stale-plan change clearly mattered, and it was reverted.
+  - **Corrected bot-v7 against bot-v6, fresh seeds 1021–1028: 172/320 (54%).**
+
+    | | bot-v7 | bot-v6 |
+    |---|---|---|
+    | Gold a round | 5.64 | 5.39 |
+    | Tributes a game | 28.9 | 27.0 |
+    | Kills | 11.8 | 11.2 |
+    | Deaths | 13.1 | 13.4 |
+    | Fuel-exhausted turns per 1,000 rounds | 147 | 160 |
+
+  - **Confirmed on a second fresh seed set (1031–1038): 172/320** again. Gold 5.66 a round against 5.42, tributes 29.2 against 26.9, deaths 12.7 against 13.3, kills 11.6 against 11.0, fuel-exhausted turns 147 against 161, 01boss-battle 7/8. **Together 344/640 (53.8%).**
+  - Shielded escape off on the same seeds (1021–1024): 69/160 against 83/160. **Kept on.**
+  - **01boss-battle against bot-v6** (16 games): **11/16**, tributes 532 a game against 218, gold +18%, our monolith kill first in 10 of 16.
+- **Lesson:** against bot-v5, candidates scored 111–119/160 on the seeds the switches were tuned on (981–984), but bot-v7 scored 98/160 on fresh seeds, about bot-v6's 101/160. Tune on one seed set, confirm on another, and always test head to head against the previous bot: the stale-plan loss only showed up against bot-v6.
+- **Open questions / follow-ups:**
+  - Weak maps against bot-v6: 00monolith 1/8, 00eight 2/8 (gold 0.47), 00gem-fields 0/8 (gold 0.37) on seeds 1021–1028. 00gem-fields is very seed-dependent (3/4 on 1001–1004).
+  - Our Heart of Ruin farms worst of our five (1,371 gold a game).
+
+---
+
+## 41. Heart of Ruin shields like Varg, and shields in the duel model
+**Commit:** Uncommitted
+
+- **What changed:**
+  - **`champions::heart_of_ruin::HEART_SHIELD_SPAM`** (on): Heart of Ruin casts its self-shield whenever it lost health since last turn or an enemy champion is within 2 tiles, at any health, the way Varg does. Before, it saved the shield for half health or a lethal hit, to keep its passive's damage bonus (up to +50% at low health).
+  - **`duel::DUEL_SHIELDS`** (on): in the 1v1 duel estimate, a ready self-shield counts as that much more health, for us and for the enemy. Time to kill against time to die used health alone.
+- **Why:** the user's suspicion. Our Heart of Ruin farmed least of our five (1,371 gold a game) and died up to 13 times a game on fight maps, while it's the top ladder pick.
+- **Results** (head to head on fresh seeds, 8 × 40 maps = 320 games each):
+  - **Shield spam:** **182/320** against bot-v7 without it. Team gold 5.86 a round against 5.35, deaths 12.1 against 14.2, kills 12.7 against 10.5. Heart of Ruin's own gold 1,238 against 1,057, kills 1.8 against 1.2, deaths 3.1 against 3.5, shielding 18,035 a game against 7,086. Against bot-v6 on the entry-40 seeds: 167/320 (172 without), with gold against v6 1.08 against 1.05, tributes 30.1 against 28.9, deaths 12.3 against 13.1.
+  - **Duel shields** (shield spam on both sides): **168/320**. Gold 5.77 a round against 5.45, kills 12.7 against 11.0, deaths 12.8 against 14.1.
+- **Final bot-v7 (both on) against bot-v6, fresh seeds 1061–1068:** 163/320. Gold 5.72 a round against 5.51, tributes 28.5 against 27.0, deaths 13.4 against 13.7, kills 12.1 against 11.7; 01boss-battle 2/8 on this seed set.
+  - All bot-v7 against bot-v6 runs so far: 172, 172, 167 and 163 of 320 (52–54%), always with more gold and tributes.
+  - 01boss-battle against bot-v6 across all runs: 24/40.
+  - The shield changes win clearly against bot-v7 without them, but add little against bot-v6.
+- **Open questions / follow-ups:** the duel still ignores Heart of Ruin's passive and its landing dash. `dps::AVERAGED` models the passive but was off when tested in v5.
+
+---
+
+## 42. bot-v8: farm-plan fuel and rallies (diagnosis; every fix tested and off)
+**Commit:** Uncommitted (`bots/bot-v8` is a copy of `bots/bot-v7`; each change has a switch, all off)
+
+- **Profiling added** (debug builds only):
+  - `trace::meter`/`metered`: fuel per code section on a turn, printed with the spill trace.
+  - `rally::RALLY_LOG`: rally calls, joins (with the joiner's distance and health), first hits, ends, expiries, and the rally group's fight verdict near it.
+  - Activity categories `walk-rally` and `wait-rally`.
+- **Where a cut-off farm turn's fuel goes** (10 games, 7,060 cut-off turns; then 4 large maps):
+  - The group loop costs 24–45k, about 1–1.6k for each of ~28 groups.
+  - Within it: groups in sight about 5k each, including the camp-fight context (about 9.6k a build, mostly ally reads at ~250 fuel each). Groups out of sight about 0.6k each, plus ~0.4k of bookkeeping per group.
+  - Target ranking 6.5–7.6k, of which the walking field from our tile is 5–8k when built.
+  - The draft memory (1,024 bytes, already holding the region table and the opening plan) is too small to carry a farm plan.
+- **Rallies** (10 games):
+  - 366 rallies, of which 82% expired after 20 rounds without anyone hitting the group, and only 21 cleared it.
+  - Waiting at or walking to rallies took **11% of all our champions' turns** (Heart of Ruin 16%).
+  - Allies do join: a median 1.5 rounds after the call, from about 10 tiles, at full health.
+  - But in 47 rallies (6 games) a joined ally stood within 6 tiles of the group, both at full health, and the fight was judged lost every turn. The need is worked out with the strongest absent teammate as the stand-in, while whoever joins may be weaker. The per-fighter escape reserve also makes every rally fight look harder than it is.
+- **Fixes tested** (all off):
+
+  | Switch | What it does | Result |
+  |---|---|---|
+  | `farm::FARM_PRUNE` | Visit groups nearest first; skip those 16+ tiles beyond the nearest available one | 148/320, timeouts up (192 against 150): pruned groups miss the far-group cache |
+  | `collect::CTX_ALLY_CACHE` | Cache allies' range, damage, max health and toughness for 10 rounds | 153/320, timeouts −3% (neutral) |
+  | `walk::GROUP_FIELDS` | Each group's walking-distance field over the terrain, built with spare end-of-turn fuel, nearest first (about 6k each, about 30k on 01big-world) | Promising alone, unconfirmed (see below) |
+  | `farm::TARGET_PER_GROUP` | Rank one tile per group | Timeouts up (211 against 172) |
+  | `collect::CHIP_SAFE` | The user's idea: on groups clearly on our side with no enemy near, a fight doing 35% of the work counts as worth it (hit, leave at the escape floor, heal, come back; camps don't heal) | Promising alone, unconfirmed (see below) |
+  | `rally::RALLY_FAIL_FAST` | End an unanswered rally after 6 rounds, not 20 | Negative: gold −7%, more deaths |
+  | `collect::RALLY_WEAKEST_STANDINS` | Work out a rally's need with the weakest absent teammates | Neutral to negative |
+
+  - **Fuel switches** (pruning, ally cache) were tested over 320 games each.
+  - **The other five** were tested over 50 games each (2 seeds × 25 maps), read game by game against a control: the same games with no change, which scored 21/50.
+  - Chip and group fields each came out +7 net flips, one tile per group +9.
+  - **Chip + group fields + one tile per group combined:** 28/50 against the control's 21 on those seeds, but 20/50 against a fresh control's 23 (net −3). So no switch is shown to help.
+- **Lessons:**
+  - 50-game tests can't separate effects this small. Even a change that doesn't alter decisions changes about half the games.
+  - A control on the same seeds is needed: with only 2 seeds the tested copy's seed alone was worth −4 wins and −9% gold.
+- **Team escape reserve** (`collect::TEAM_ESCAPE_RESERVE`, on in bot-v8): with allies in a camp fight, only the front fighter (shortest attack range, the one the camps hit) keeps the walk-out reserve.
+  - Results (2 seed pairs × 50 games against same-game controls): 25/50 against 21/50 (+11/−7 flips) and 25/50 against 23/50 (+9/−7). Together +20/−14, a slight lean in favour.
+  - Rallies barely changed: cleared 96 against 97, expired unhit 1,252 against 1,301.
+  - Worked through the check, two early champions still honestly lose to two elk (about 30 rounds at 120 a round).
+- **Open questions / follow-ups:**
+  - What sinks rallies is their sizing. "One more ally" is worked out for the strongest absent teammate (often Vesper Vale), while the ally who comes is often weaker. Weakest stand-ins alone were neutral; try them with the team reserve.
+  - 96 of 1,552 rallies had the fight judged winnable at some point but nobody attacked. Worth a trace.
+- **Follow-up (same games, same controls, 2 seed pairs × 50 games each):**
+  - **Team reserve + weakest stand-ins** (`RALLY_WEAKEST_STANDINS`, now on): **58/100 against the controls' 44/100**, +23/−9 game flips (about 2% likely by chance; a neutral change drifts about +2 here). Rallies cleared about +10%. **Both on in bot-v8.**
+  - **The winnable-but-unattacked rallies, traced:** after the verdict turned winnable, the champion's next turns were most often `rally-skip-closer-camp`. The skip was either decided while far away and kept for `RALLY_DECISION_ROUNDS` (15), or the 10-step waiting charge let a camp 11 steps off beat a rally 2 steps off.
+  - **`farm::RALLY_GO_WHEN_WINNABLE`** (within 8 tiles of a rally whose fight is winnable now: go, ignoring the wait charge, the kept decision, the cap and side camps): rallies cleared 302 against 219, but 51/100 (+29/−22). With weakest stand-ins as well: 50/100. **Off.**
+
+## 43. What causes cut-off turns, and keeping plans that won't fit (`farm::FIT_STALE_ROUNDS`)
+**Commit:** Uncommitted (`bots/bot-v8`)
+
+- **Why:** against the top-50 ladder teams in low-interaction games, bot-v8 had about 227 fuel-exhausted (cut-off) turns per 1,000 rounds against their 26. A cut-off turn stops mid-code and finishes in the next round, so the champion loses a turn.
+- **How it was found:** traced bot-v8 self-play logged every turn with its checkpoints and the number of enemies, allies and camps in sight. 40 games gave 236k turns, 4.1% of them cut off. The cut-off rate was then split by situation.
+  - Profiling fixes first: fuel reads in the trace now happen inside `debug_block` (free locally). A turn counts as cut off only when fuel jumps up by more than 5k between checkpoints; refunded reads made back-to-back checkpoints look like small jumps.
+- **The condition: building a farm plan with camps in sight.**
+  - Turns that built a plan were 90% of all cut-offs. Turns that reused or kept a plan ran out 0–0.4% of the time.
+  - Cut-off rate of plan builds by camps in sight: 0 camps 5%, 1–3 7%, 4–8 18%, 9+ 50%. On turns without a plan build, even 9+ camps only reached 2%.
+  - Enemies in sight barely mattered (4.9% with 2+ against 4.0% with none). Allies in sight mattered somewhat (7.9% with 3+ against 2.6% with none), through the camp-fight context's ally reads.
+  - Worst maps: 01yellow-brick-road (26% of all turns), 01boss-battle, 00split, 00lanes, 00quadrants.
+  - Half of these cut-offs started below `FARM_PLAN_MIN_FUEL` (85k) with no kept plan young enough (`STALE_PLAN_ROUNDS` 3). In camp-dense spots the plan was rebuilt every third round and cut off most times. The other half started above 85k and still didn't fit.
+- **Where a dense plan's fuel goes** (fine meters, 9+ camps in sight; ~65k a plan against ~25k with none):
+  - Camp-fight verdicts 28k, including the camp-fight context at 11.7k a build: allies ~4k, camp list ~4k. A resumed turn builds the context again.
+  - The live-camp scan of the near pass, 9k: each member of each group in sight against every camp in sight.
+  - Target ranking 5k and far groups 5k.
+  - The turn before the farm step costs another 25–30k (sight, support, safety checks), and turns spent hitting a camp end with only ~60k left. A dense plan has no spare turn to be built in.
+- **Fixes that failed:**
+  - **Camp reads kept per sight:** a camp host read is only ~100 fuel, and the thread-local lookup cost 400–500. Cut-off turns rose 23% over 100 games. Removed.
+  - **Fight context kept across a step** (`collect::CTX_ROUND_REUSE`): no effect. The second context of a turn comes from resuming, not stepping. Off.
+  - **Live-camp tile bitboard** (`farm::LIVE_TILES_LOOKUP`): saved 3k per dense plan but left cut-offs unchanged (176/185 against 178/177). Wins 50/100 against the controls' 55. Off.
+- **The fix: `farm::FIT_STALE_ROUNDS`** (on, 6). Each champion measures what its last plan build cost. When the fuel left is below that cost plus a 15k move reserve, it keeps its last plan for up to 6 rounds instead of 3. It does so even above 85k.
+  - **Self-play, 4 seed pairs × 50 games, each against a same-game control:** 105/200 against 101/200 (+44/−40). Cut-off turns 143 against 175 per 1,000 rounds (−18%), and −25 to −33% on the dense maps. Gold a little up.
+  - **Milder variants:** 4 rounds gave 108/200 and −7%. 6 rounds only without enemies in sight gave 107/200 and −13%.
+  - **Against bot-v7, 2 seed pairs:** 57/100 against 48/100 for bot-v8 without it (+28/−19), cut-off turns −17%. In entry 39, longer kept plans lost to a bot that replans. This version only keeps a plan when a fresh one would be cut off anyway, and it didn't lose.
+  - **bot-v8 (without it) against bot-v7:** 48/100 against 43/100 for bot-v7 against itself on the same seeds (+26/−21).
+  - The control runs reproduce exactly (0 flips over 100 games), so the same-game comparisons are sound.
+- **Open questions / follow-ups:**
+  - Dense plan builds still run out about half the time. The real fix is a cheaper camp-fight check with many camps in sight: fewer verdicts per plan, or a leaner context. Every fuel saving so far has been a few k out of ~100k.
+  - Tools (scratchpad): `cut_conditions.py` (cut-off rate by situation), `plan_cost.py` (segment costs by camps in sight), `meters.py` (fine meters), `fuel_cmp.py` (cut-offs per map against a control).
+
+## 44. Rally replies (`rally::RALLY_REPLIES`) and neutral fuel savers on
+**Commit:** Uncommitted (`bots/bot-v8`)
+
+- **What changed:** every champion answers a new rally on its first turn after the call, before its fight and farm code.
+  - **No** if the rally already has the allies it needs.
+  - **Yes** if it can arrive within 18 steps: on foot (needs 60%+ health), or by recalling first (5 turns, plus the walk from our spawn). So a rally near our base can be answered from anywhere.
+  - **No** if it's dead, recalling, holding a capture, or the gate guard.
+  - Yes replies use the join bits in shared byte 5; no replies use byte 4, the only free byte.
+  - The caller cancels if too few say yes within 1 round, or as soon as everyone has answered, and gives that group up for 40 rounds.
+  - Only the champions that said yes go. They only hit the rally group's camps on the way (or awake ones), and only reuse a kept plan if it's a rally plan.
+  - Everyone else ignores the rally: no waiting charge, no cached skip.
+- **Why:** 47% of rallies had nobody join and 82% expired before anyone hit the camp (about 11% of champion turns). The usual reason was `rally-skip-closer-camp`.
+- **Results:** 4 seed pairs × 50 games against same-game controls (control 102/200; a rerun of one control reproduced it exactly).
+  - Without the two on-the-way rules: 99/200 (+40/−43).
+  - With them: 96/200 (+46/−52).
+  - Fuel-exhausted turns 118 and 122 per 1,000 rounds against 138 (−12 to −15%). Gold ratio a little lower (0.97 against 0.99).
+  - Traced (6 games): 53–62% of rallies were cancelled at once instead of running out 20 rounds. Helpers that said yes spent 48% of the rally on it (42% without the on-the-way rules), but answered rallies still mostly ran out unwon (17 of 251 cleared).
+  - **On** (user rule: a fuel saver that tests neutral stays on).
+- **Also on now, same rule:** `collect::CTX_ALLY_CACHE`, `farm::LIVE_TILES_LOOKUP`. `TARGET_PER_GROUP` stays off: it raised fuel-exhausted turns (211 vs 172).
+- **Open questions / follow-ups:**
+  - Answered rallies that still expire: the fight check doesn't turn winnable, or helpers arrive late.
+  - Rewards left uncaptured (8% of clears never captured):
+    - Melee champions hand rewards to Vesper Vale whenever she has a capture tile in range: 10% are then never captured, and the rest take a median 8 rounds.
+    - Champions shoot other camps on the way to a capture.
+    - They go home, bank or kite off the tile before the 5-round capture completes.
+
+## 45. Rally commit, hand-off model 1, going home for real upgrades (overnight tests)
+**Commit:** Uncommitted (`bots/bot-v8`)
+
+- **What changed (all on together):**
+  - **`rally::RALLY_COMMIT`:** once the caller and the allies it asked for (joined, within 3 tiles of the group) are all there, the fight is on without being judged again.
+  - **`camps::HANDOFF_MODEL` 1:** a tank or melee champion leaves a capture to Vesper Vale only when she's within 2 tiles of a capture tile, instead of whenever one is in her attack range.
+  - **`HOME_STAT_GAIN` 0.15 (bot.rs):** go home for gold only once it buys shards adding 15% to the stat the build buys next. Otherwise only missing health, or the low-health recall, sends a champion home. Before, 150 gold was enough.
+  - Also: champions now recognise they've already answered a rally from their own bit in shared memory, so the rally timer can be restarted.
+- **Why:**
+  - Of 117 answered rallies, 28 had everyone there and the verdict stayed "lose" (the caller sized the rally with stand-ins). Another 37 had everyone there, judged winnable, and still ran out of time.
+  - 10% of captures left to Vesper were never captured.
+  - Champions went home a lot.
+- **Results:** 4 seed pairs × 50 games each against same-game controls.
+  - **Overnight** (seeds 2101–2108, control 97/200):
+
+    | Config | Wins |
+    |---|---|
+    | `RALLY_COMMIT` | 111 (gold +4.5%, deaths −0.4) |
+    | `RALLY_REFRESH` (restart the clock on answer and on hits) | 108 |
+    | Refresh + commit | 108 |
+    | Hand-off model 1 | 105 |
+    | Hand-off model 2 (Vesper closer than us) | 99 |
+    | `FUNNEL_MELEE` off | 109 |
+    | `TANK_FUNNEL` off | 88 |
+    | Going home at 15% / 25% / 40% | 109 / 108 / 107 (deaths rise with the threshold) |
+
+  - **Confirmed on fresh seeds** (2201–2208, control 102/200):
+
+    | Config | Wins |
+    |---|---|
+    | **Commit + model 1 + going home at 15%** | **137 (+71/−36), gold +6.9%, gems submitted +10%** |
+    | Commit + `FUNNEL_MELEE` off + going home at 15% | 112 |
+    | Same, plus refresh | 117 |
+    | Commit alone | 107 |
+
+  - **Against bot-v7** (2 seed pairs): 61/100 against 54/100 for bot-v8 without them (+24/−17), gold ratio 1.10–1.14 against 1.03–1.08.
+- **Open questions / follow-ups:**
+  - Kills didn't go up when ahead (11.7 against 11.0).
+  - Going home less raises deaths slightly.
+  - `RALLY_REFRESH` stays off.
+
+## 46. Chase rules, rally availability (2026-10-24)
+**Commit:** Uncommitted (`bots/bot-v8`)
+
+- **Chase gate** (the user's rules), each tested over 100 games against the same control (50/100):
+
+  | Rule | Wins | Note |
+  |---|---|---|
+  | All rules together | 42 | kills 8.3 against 10.9, deaths 12.9 against 13.2 |
+  | Busy leash: 3 tiles while there's a reward, rally or capture to do | 45 | |
+  | Vesper Vale only chases with dash + one-shot | 51 | |
+  | Catch-up within 8 rounds | 42 | |
+  | Catch-up within 15 rounds | 43 | |
+
+  The chases end in kills and cost few deaths. **All off.**
+- **`rally::RALLY_AVAIL`** (the user's design, on):
+  - Shared byte 4 now marks who can't come to any rally right now: dead, or fought enemies this turn. Each champion updates its own bit every turn.
+  - A rally is only called if enough allies are available for the need.
+  - The caller sets priority 0 so it acts last in the next round (higher priority acts first), and sees every answer before it keeps or cancels.
+  - Results: 119/200 against 101, then 96/200 against 95 on fresh seeds. Together 215/400 against 196 (+101/−82), gold +2–3%, gems submitted +7%, more kills, slightly fewer deaths.
+- **Chase guards, off:**
+  - `chase::ENEMY_BASE_NO_CHASE` (no chasing within 3 tiles of the enemy spawn): 107/200 against 101 alone.
+  - `chase::CHASE_CAMP_GUARD` (no chase step into an awake camp's reach): 109/200 against 101 alone.
+  - Both on top of `RALLY_AVAIL`, on fresh seeds: 86/200 against `RALLY_AVAIL`'s 96, with kills down.
+
+## 47. Lost-world loops, Vesper idling, captures near fights, dense-area heuristic (2026-10-24)
+**Commit:** Uncommitted (`bots/bot-v8`)
+
+- **Lost-world loop (traced):**
+  - Champions paced between (6–8, 11–12), above the long wall, for 10–13 rounds at a time.
+  - From there the middle gem clusters show over the holes, about 20 steps away around the wall. A reward in sight came before everything, including a rally the champion had said yes to, so each step flipped the target: reward → nearest camp or rally → reward.
+  - **`farm::REWARD_PRIORITY_STEPS` 8** (rewards only take priority within 8 steps on foot): loops 38 → 26 in 4 traced lost-world games, but 54/100 against 52 overall, with gold −3.7%. **Off.**
+- **Vesper Vale idling** (25 traced games): 6% of her turns.
+
+  | Share of her turns | Cause |
+  |---|---|
+  | 2.1% | No fuel left to move after the fight check |
+  | 1.2% | All goal tiles blocked (57% of those on a kept plan) |
+  | 1.2% | Capturing |
+  | 0.7% | Rally (down from about 3.9% before `RALLY_AVAIL`) |
+
+  **`farm::BLOCKED_REPLAN`** (drop the kept plan and rebuild when goals are blocked): 53/100 against 52. **Off.**
+- **Captures given up for distant fights:** fighting runs before the capture check each turn, and enemies up to 7 tiles away pulled champions off capture tiles (leaving resets the capture).
+  - **`fight::CAPTURE_FIGHT_TILES`:** while capturing, or with the plan heading for a reward or capture, only enemies within N tiles count.
+  - 3 tiles: **61/100 against 52 (+27/−18), gold +7.9%, gems submitted +8.6%, kills up, deaths down. On.**
+  - 5 tiles: 52/100. Off.
+- **Dense-area heuristic, `collect::DENSE_ALIKE_VERDICTS`** (a group that looks like one already judged this turn takes its verdict): 100/200 against 116, gold −5.1%, fuel-exhausted turns up. **Off.**
+- **No chasing within 3 tiles of the enemy spawn** (`chase::ENEMY_BASE_NO_CHASE`): **on**, at the user's call.
+
+---
+
 ## Testing recipes
 
 - **vs starter on every map, both sides:** the `cambc run-batch` loop (writes a manifest to `replays/vs-starter/`, runs with `--jobs 8`, prints the win count). Change `OPP=` to test against another bot.
