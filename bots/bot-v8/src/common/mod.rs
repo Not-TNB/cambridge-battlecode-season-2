@@ -14,6 +14,7 @@ mod duel;
 mod farm;
 mod fight;
 pub mod gemcarry;
+pub mod graph;
 pub mod jackpot;
 pub mod locks;
 pub mod mitigation;

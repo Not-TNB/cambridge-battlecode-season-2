@@ -224,6 +224,16 @@ fn turn_damage_against(enemy: &Champion) -> Result<f32> {
 // decision each used to build their own, which left too little fuel to farm on turns where an
 // enemy was in sight but not worth chasing (the champion then stood still). Cached per round and
 // position, so it's rebuilt if we move.
+// v8 (2026-10-25, from a ladder loss on 00elkring): the duel only weighed enemies in sight, so Ryth
+// took on the one enemy he could see while the rest of their team (seen moments before) was just
+// out of sight, and died to all five. With this on, enemies seen in the last FIGHT_MEMORY_ROUNDS
+// rounds and out of sight now count as threats in fight decisions (safety::unseen_recent_threats).
+// Off: only what we see.
+// 2026-10-25, same games (control 53/100): 42/100 (+9/-20), kills 9.7 against 10.0, gold -2.0%,
+// deaths unchanged: more caution, nothing saved (with COMMIT_RECHECK as well: 32/100). Off.
+pub const FIGHT_REMEMBERS_ENEMIES: bool = false;
+const FIGHT_MEMORY_ROUNDS: u32 = 3;
+
 pub struct FightView {
     pub threats: Threats,
     pub allies: Vec<Helper>,
@@ -249,7 +259,13 @@ pub fn fight_view() -> Result<std::rc::Rc<FightView>> {
     checkpoint("fight-view-blocked-start");
     let blocked = blocked_tiles()?;
     checkpoint("fight-view-blocked-done");
-    let threats = Threats::scan()?;
+    let mut threats = Threats::scan()?;
+    // FIGHT_REMEMBERS_ENEMIES: enemies that just stepped out of sight still count.
+    if FIGHT_REMEMBERS_ENEMIES {
+        threats
+            .0
+            .extend(super::safety::unseen_recent_threats(FIGHT_MEMORY_ROUNDS)?);
+    }
     checkpoint("fight-view-threats");
     let allies = ally_helpers()?;
     checkpoint("fight-view-allies");

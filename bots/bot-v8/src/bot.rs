@@ -273,6 +273,10 @@ impl Bot {
             }
             common::checkpoint("turn-altar-steps");
             let _ = common::walk::build_next_group_field();
+            // The camp graph, a few rows a turn from the spare fuel (common::graph).
+            if let Err(error) = common::graph::build_step() {
+                println!("bot error (graph): {error}");
+            }
         }
         // Profiling output: free in local debug builds, skipped on the platform (debug_block).
         cambc::debug_block! {

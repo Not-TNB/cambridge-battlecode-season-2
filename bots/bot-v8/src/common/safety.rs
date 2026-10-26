@@ -166,6 +166,37 @@ pub fn note_hidden_attacker(damage: f32) -> Result<()> {
     Ok(())
 }
 
+// Threats of enemies seen within the last `rounds` rounds and out of sight now, their reach grown
+// by a turn of walking a round (duel::FIGHT_REMEMBERS_ENEMIES).
+pub fn unseen_recent_threats(rounds: u32) -> Result<Vec<Threat>> {
+    let round = cambc::round_number()?;
+    let mut visible = Vec::new();
+    for enemy in &super::world::sight()?.enemies {
+        if let Ok(name) = enemy.champion_name() {
+            visible.push(name);
+        }
+    }
+    Ok(SIGHTINGS.with(|s| {
+        let mut out = Vec::new();
+        for old in s.borrow().iter() {
+            let age = round.saturating_sub(old.round);
+            if age == 0 || age > rounds || visible.contains(&old.name) {
+                continue;
+            }
+            for t in &old.threats {
+                out.push(Threat {
+                    origin: t.origin,
+                    range: t.range + t.speed * age as i32,
+                    damage: t.damage,
+                    speed: t.speed,
+                    shield: None,
+                });
+            }
+        }
+        out
+    }))
+}
+
 // Everything we can see that could hurt us, plus enemies seen in the last SIGHTING_ROUNDS rounds
 // that are now out of sight.
 pub fn known_threats() -> Result<Threats> {

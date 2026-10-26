@@ -152,6 +152,15 @@ pub fn forget_lost_camps() {
 // 0: judge every turn. 2026-10-21, 132 games: off lost 50 to 82 against on (the biggest of the
 // three changes tested together with threats::CAMPS_HIT_CLOSEST and movement::CENTRE_TIE_BREAK).
 pub const CAMP_COMMIT_ROUNDS: u32 = 3;
+// v8 (2026-10-25, from a ladder loss on 00elkring): the commitment kept a champion in a fight after
+// the allies it counted on walked off (Marcella took 900 camp damage alone while Ryth went to fight
+// an enemy): the fight check counts allies who could walk into support range within ALLY_JOIN_TURNS
+// as helpers, and once committed it's never asked again. With this on, a commitment only holds
+// while the fight is winnable with the allies in support range now; otherwise the fight is judged
+// lost for us. Off: committed means winnable.
+// 2026-10-25, 2 seed pairs x 50 games against same-game controls (53/100): 33/100 (+15/-35),
+// deaths 13.4 against 11.6, gold -5.3%: leaving a half-done camp fight costs far more than staying. Off.
+pub const COMMIT_RECHECK: bool = false;
 
 thread_local! {
     static ENGAGED: std::cell::RefCell<Vec<(usize, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -253,6 +262,30 @@ fn committed(index: usize) -> Result<bool> {
             .iter()
             .any(|&(g, r)| g == index && round < r + CAMP_COMMIT_ROUNDS)
     }))
+}
+
+// Whether we'd win group `index`'s fight with only the allies in support range now (COMMIT_RECHECK).
+fn supported_now(index: usize) -> Result<bool> {
+    ensure_context()?;
+    CONTEXT.with(|c| {
+        let c = c.borrow();
+        let ctx = c.as_ref().expect("built above");
+        let camps = group_camps(ctx, index)?;
+        if camps.iter().all(|&(_, _, s, _)| s <= 0.0) {
+            return Ok(true); // clusters don't hit back
+        }
+        let near: Vec<Helper> = ctx
+            .helpers
+            .iter()
+            .filter(|h| {
+                camps
+                    .iter()
+                    .any(|c| distance(c.0, h.0) <= h.1.max(CAMP_ALLY_SUPPORT_RADIUS))
+            })
+            .copied()
+            .collect();
+        fight_winnable(ctx, camps, &near, fight_share(index)?)
+    })
 }
 
 // Whether group `index` is partly cleared as far as we can see: a member we can see is dead, or a
@@ -640,7 +673,11 @@ pub fn camp_fight_winnable(index: usize) -> Result<Option<bool>> {
         return Ok(Some(true));
     }
     if committed(index)? {
-        return Ok(Some(true));
+        if !COMMIT_RECHECK || supported_now(index)? {
+            return Ok(Some(true));
+        }
+        super::trace::trace("commit-unsupported");
+        return Ok(Some(false));
     }
     // Everyone the rally needed is at the group (rally::RALLY_COMMIT).
     if super::rally::RALLY_COMMIT && super::rally::arrived(index)? {

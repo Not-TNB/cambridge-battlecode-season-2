@@ -92,3 +92,60 @@ RDG='common/rally.rs=s/^pub const RALLY_DASH_GAPS: bool = false;/pub const RALLY
 HIDE='common/safety.rs=s/^pub const HIDDEN_ATTACKER: bool = false;/pub const HIDDEN_ATTACKER: bool = true;/'
 RBBOFF='common/collect.rs=s/^pub const REWARD_BEFORE_BANK: bool = true;/pub const REWARD_BEFORE_BANK: bool = false;/'
 GAPR='common/movement.rs=s/^pub const GAP_ROUTE: bool = false;/pub const GAP_ROUTE: bool = true;/'
+CRC='common/collect.rs=s/^pub const COMMIT_RECHECK: bool = false;/pub const COMMIT_RECHECK: bool = true;/'
+FRE='common/duel.rs=s/^pub const FIGHT_REMEMBERS_ENEMIES: bool = false;/pub const FIGHT_REMEMBERS_ENEMIES: bool = true;/'
+GRAPHON='common/graph.rs=s/^pub const CAMP_GRAPH: bool = false;/pub const CAMP_GRAPH: bool = true;/'
+# bot-v9 camp graph (common/graph.rs): both on by default in v9
+G9OFF='common/graph.rs=s/^pub const CAMP_GRAPH: bool = true;/pub const CAMP_GRAPH: bool = false;/'
+G9NOSTEPS='common/graph.rs=s/^pub const GRAPH_STEPS: bool = true;/pub const GRAPH_STEPS: bool = false;/'
+# bot-v9 lazy fight walking grid (common/movement.rs): off = always copy the field out
+LWG0='common/movement.rs=s/^pub const LAZY_WALKGRID_TILES: i32 = 5000;/pub const LAZY_WALKGRID_TILES: i32 = 0;/'
+# bot-v9 Health emblems for Vesper Vale and Vendetta (champions/mod.rs)
+HPB='champions/mod.rs=s/^pub const HEALTH_BUILDS: bool = false;/pub const HEALTH_BUILDS: bool = true;/'
+# 2026-10-25: HEALTH_BUILDS now on in bot-v9; switch back off with:
+HPBOFF='champions/mod.rs=s/^pub const HEALTH_BUILDS: bool = true;/pub const HEALTH_BUILDS: bool = false;/'
+# bot-v9 capped melee funnel (common/camps.rs)
+FCE2='common/camps.rs=s/^pub const FUNNEL_CAP_EMBLEMS: u32 = 0;/pub const FUNNEL_CAP_EMBLEMS: u32 = 2;/'
+FCE3='common/camps.rs=s/^pub const FUNNEL_CAP_EMBLEMS: u32 = 0;/pub const FUNNEL_CAP_EMBLEMS: u32 = 3;/'
+FCR300='common/camps.rs=s/^pub const FUNNEL_CAP_ROUND: u32 = 0;/pub const FUNNEL_CAP_ROUND: u32 = 300;/'
+# bot-v9 plan fuel guard (common/farm.rs)
+PFR25='common/farm.rs=s/^pub const PLAN_FUEL_RESERVE: u64 = 0;/pub const PLAN_FUEL_RESERVE: u64 = 25_000;/'
+PFR30='common/farm.rs=s/^pub const PLAN_FUEL_RESERVE: u64 = 0;/pub const PLAN_FUEL_RESERVE: u64 = 30_000;/'
+PFR35='common/farm.rs=s/^pub const PLAN_FUEL_RESERVE: u64 = 0;/pub const PLAN_FUEL_RESERVE: u64 = 35_000;/'
+PFR40='common/farm.rs=s/^pub const PLAN_FUEL_RESERVE: u64 = 0;/pub const PLAN_FUEL_RESERVE: u64 = 40_000;/'
+PFR50='common/farm.rs=s/^pub const PLAN_FUEL_RESERVE: u64 = 0;/pub const PLAN_FUEL_RESERVE: u64 = 50_000;/'
+# 2026-10-25: PLAN_FUEL_RESERVE now 50k in bot-v9; off with:
+PFROFF='common/farm.rs=s/^pub const PLAN_FUEL_RESERVE: u64 = 50_000;/pub const PLAN_FUEL_RESERVE: u64 = 0;/'
+# bot-v9 big-group diagnostics (common/farm.rs)
+BIGDIAG='common/farm.rs=s/^pub const BIG_DIAG: bool = false;/pub const BIG_DIAG: bool = true;/'
+# bot-v9 reward-rate targets and respawn waits (common/farm.rs)
+RATE='common/farm.rs=s/^pub const RATE_TARGETS: bool = false;/pub const RATE_TARGETS: bool = true;/'
+RSPW='common/farm.rs=s/^pub const RESPAWN_RATE: bool = false;/pub const RESPAWN_RATE: bool = true;/'
+# 2026-10-25 big-group batch (bot-v9)
+VP2='common/farm.rs=s/^pub const VALUE_PULL_STEPS: f32 = 0.0;/pub const VALUE_PULL_STEPS: f32 = 2.0;/'
+NA4='common/farm.rs=s/^pub const NEAR_ALLY_BONUS: i32 = 0;/pub const NEAR_ALLY_BONUS: i32 = 4;/'
+RETB='common/farm.rs=s/^pub const RETURN_BIG: bool = false;/pub const RETURN_BIG: bool = true;/'
+HELPC='common/rally.rs=s/^pub const HELP_CALLS: bool = false;/pub const HELP_CALLS: bool = true;/'
+RGOW='common/farm.rs=s/^pub const RALLY_GO_WHEN_WINNABLE: bool = false;/pub const RALLY_GO_WHEN_WINNABLE: bool = true;/'
+RR26='common/rally.rs=s/^const RALLY_REPLY_MAX_STEPS: i32 = 18;/const RALLY_REPLY_MAX_STEPS: i32 = 26;/'
+RR34='common/rally.rs=s/^const RALLY_REPLY_MAX_STEPS: i32 = 18;/const RALLY_REPLY_MAX_STEPS: i32 = 34;/'
+RLOG='common/rally.rs=s/^pub const RALLY_LOG: bool = false;/pub const RALLY_LOG: bool = true;/'
+# bot-v9 rally handshake modes (common/rally.rs)
+HS1='common/rally.rs=s/^pub const RALLY_HANDSHAKE: u8 = 0;/pub const RALLY_HANDSHAKE: u8 = 1;/'
+HS2='common/rally.rs=s/^pub const RALLY_HANDSHAKE: u8 = 0;/pub const RALLY_HANDSHAKE: u8 = 2;/'
+HS3='common/rally.rs=s/^pub const RALLY_HANDSHAKE: u8 = 0;/pub const RALLY_HANDSHAKE: u8 = 3;/'
+# 2026-10-25 late-game richer camps (bot-v9, RALLY_HANDSHAKE 3 on)
+VP4='common/farm.rs=s/^pub const VALUE_PULL_STEPS: f32 = 0.0;/pub const VALUE_PULL_STEPS: f32 = 4.0;/'
+VP8='common/farm.rs=s/^pub const VALUE_PULL_STEPS: f32 = 0.0;/pub const VALUE_PULL_STEPS: f32 = 8.0;/'
+VPF500='common/farm.rs=s/^pub const VALUE_PULL_FROM_ROUND: u32 = 0;/pub const VALUE_PULL_FROM_ROUND: u32 = 500;/'
+VPF800='common/farm.rs=s/^pub const VALUE_PULL_FROM_ROUND: u32 = 0;/pub const VALUE_PULL_FROM_ROUND: u32 = 800;/'
+RTF500='common/farm.rs=s/^pub const RATE_FROM_ROUND: u32 = 0;/pub const RATE_FROM_ROUND: u32 = 500;/'
+RTF800='common/farm.rs=s/^pub const RATE_FROM_ROUND: u32 = 0;/pub const RATE_FROM_ROUND: u32 = 800;/'
+HS3OFF='common/rally.rs=s/^pub const RALLY_HANDSHAKE: u8 = 3;/pub const RALLY_HANDSHAKE: u8 = 0;/'
+RTNOWALK='common/farm.rs=s/^pub const RATE_WALK_RERANK: bool = true;/pub const RATE_WALK_RERANK: bool = false;/'
+REC30='common/farm.rs=s/^pub const RATE_RECOVER_ROUNDS: f32 = 12.0;/pub const RATE_RECOVER_ROUNDS: f32 = 30.0;/'
+VPCHEAP='common/farm.rs=s/^pub const VALUE_PULL_IN_CHEAP: bool = false;/pub const VALUE_PULL_IN_CHEAP: bool = true;/'
+BALT='bot.rs=s/^pub const BUILD_ALTERNATE_TAIL: bool = false;/pub const BUILD_ALTERNATE_TAIL: bool = true;/'
+DET6='common/farm.rs=s/^pub const RATE_DETOUR_STEPS: i32 = 0;/pub const RATE_DETOUR_STEPS: i32 = 6;/'
+DET12='common/farm.rs=s/^pub const RATE_DETOUR_STEPS: i32 = 0;/pub const RATE_DETOUR_STEPS: i32 = 12;/'
+ASHARE='common/farm.rs=s/^pub const RATE_ALLY_SHARE: bool = false;/pub const RATE_ALLY_SHARE: bool = true;/'

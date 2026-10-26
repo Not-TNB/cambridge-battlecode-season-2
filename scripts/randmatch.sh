@@ -70,6 +70,11 @@ seeded() {
   for item in .cargo .gitignore Cargo.lock Cargo.toml rust-toolchain.toml src; do
     [ -e "bots/$bot/$item" ] && cp -r "bots/$bot/$item" "bots/$copy/"
   done
+  # cambc refuses Windows line endings in the files it manages (they must match its template), and
+  # a git checkout with core.autocrlf gives them CRLF.
+  for item in Cargo.toml .cargo/config.toml rust-toolchain.toml .gitignore; do
+    if [ -e "bots/$copy/$item" ]; then sed -i 's/\r$//' "bots/$copy/$item"; fi
+  done
   if [ $has_seed = yes ]; then
     sed -i.bak -E "s/const SEED: u64 = 0x[0-9a-fA-F_]+;/const SEED: u64 = 0x$seed;/" "bots/$copy/src/main.rs"
     rm -f "bots/$copy/src/main.rs.bak"
