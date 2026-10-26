@@ -99,7 +99,7 @@ pub const CAMP_AWAKE_QUERY: bool = true;
 fn camp_threats(threats: &mut Vec<Threat>) -> Result<()> {
     let sight = sight()?;
     if sight.camps.is_empty() {
-        return Ok(());
+        return remembered_threats(threats, &sight);
     }
     let groups = camp_groups()?;
     let bodies = other_champions()?;
@@ -134,14 +134,74 @@ fn camp_threats(threats: &mut Vec<Threat>) -> Result<()> {
         }
         for c in live {
             let range = c.attack_range()?;
+            let damage = c.strength()?;
+            if CAMP_THREAT_MEMORY {
+                remember_awake(c.spawn_position(), range, damage);
+            }
             threats.push(Threat {
                 origin: c.spawn_position(),
                 range,
-                damage: c.strength()?,
+                damage,
                 speed: 0,
                 shield: camp_shield(c.spawn_position(), range, &bodies),
             });
         }
+    }
+    remembered_threats(threats, &sight)
+}
+
+// v9 (2026-10-26, the user: champions walked out of a bush into awake camps they could no longer
+// see, and died): awake camps we saw stay threats for CAMP_MEMORY_ROUNDS while out of sight (in a
+// bush, behind us), for retreats, recall spots and the low-health check. One seen dead, or seen
+// again (then it's in sight), drops out. Off: only camps in sight.
+// 2026-10-26 (SDK 4.0, 70 maps), 140 games against bot-v8 with a same-seed control (72/140, gold
+// 0.97x, deaths 12.0 a game, 1.2 of them to camps): 66/140 (+28/-34), gold at round 300
+// 845 against 928, camp deaths unchanged (1.19). Off.
+pub const CAMP_THREAT_MEMORY: bool = false;
+const CAMP_MEMORY_ROUNDS: u32 = 6;
+
+thread_local! {
+    // (tile, attack range, strength, round last seen awake)
+    static AWAKE_SEEN: std::cell::RefCell<Vec<(Vec2, i32, f32, u32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn remember_awake(tile: Vec2, range: i32, damage: f32) {
+    let round = cambc::round_number().unwrap_or(0);
+    AWAKE_SEEN.with(|a| {
+        let mut a = a.borrow_mut();
+        match a.iter_mut().find(|e| e.0 == tile) {
+            Some(e) => *e = (tile, range, damage, round),
+            None => a.push((tile, range, damage, round)),
+        }
+    });
+}
+
+// Remembered awake camps out of sight now: (tile, attack range, strength). Camps on visible tiles
+// are in sight (or dead) and drop out.
+pub fn remembered_camps(sight: &super::world::Sight) -> Vec<(Vec2, i32, f32)> {
+    if !CAMP_THREAT_MEMORY {
+        return Vec::new();
+    }
+    let round = cambc::round_number().unwrap_or(0);
+    AWAKE_SEEN.with(|a| {
+        let mut a = a.borrow_mut();
+        a.retain(|&(t, _, _, r)| {
+            round < r + CAMP_MEMORY_ROUNDS && !sight.visible.is_set(t).unwrap_or(true)
+        });
+        a.iter().map(|&(t, range, d, _)| (t, range, d)).collect()
+    })
+}
+
+fn remembered_threats(threats: &mut Vec<Threat>, sight: &super::world::Sight) -> Result<()> {
+    for (origin, range, damage) in remembered_camps(sight) {
+        threats.push(Threat {
+            origin,
+            range,
+            damage,
+            speed: 0,
+            shield: None,
+        });
     }
     Ok(())
 }

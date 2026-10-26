@@ -111,6 +111,10 @@ pub struct Bot {
     last_turn_hp: Option<f32>, // health at our last turn's start (safety::HIDDEN_ATTACKER)
 }
 
+// Room for every item id: SDK 4.0 has 84 items (it was 42). A fixed 42 indexed past its end on
+// the new items and panicked every turn on the platform (2026-10-26).
+const ITEM_KINDS: usize = 128;
+
 // The Treasure shard of the same stat as `shard` (each family lists Strength, Focus, Health as
 // shard/emblem pairs, so the stat is the item's index mod 6).
 fn treasure_shard(shard: Item) -> Item {
@@ -138,6 +142,22 @@ const TREASURE_EVERYONE_AT: usize = 0;
 // games past ~20 emblems change), Vesper's gold at the end 3,783 against 3,612. Neutral; on for the
 // build top teams use (mostly Strength late on Vesper).
 pub const BUILD_ALTERNATE_TAIL: bool = true;
+
+// v9 (2026-10-26, the user's idea): turn order by strength, strongest first (a caller waiting for
+// replies still acts last): allies answer a rally in that order and the replies stop once it has
+// the allies it needs (rally::RALLY_CAP), so the strongest free allies answer it. Strength is our
+// camp damage times our health. Off: a random order each turn.
+// 2026-10-26 (SDK 4.0, 70-map pool), 140 games against bot-v8 with a same-seed control (71/140):
+// 52/140 (+24/-43), gold at round 300 822 against 914, gold ratio 0.83 against 0.95, deaths 13.2
+// against 12.5; rallies unchanged. With RALLY_JUDGE_RESPONDERS 59/140. Off.
+pub const STRENGTH_ORDER: bool = false;
+
+// Our priority for STRENGTH_ORDER: 1 and up, higher for stronger (0 is the waiting caller's).
+fn strength_priority() -> i32 {
+    let damage = common::collect::our_camp_damage().unwrap_or(0.0);
+    let health = me().and_then(|m| m.max_health()).unwrap_or(0.0);
+    (1.0 + damage * health / 1000.0).clamp(1.0, 1_000_000.0) as i32
+}
 
 // The champion's build with a Treasure emblem of its first entry's stat put in (see
 // TREASURE_EVERYONE_AT and opening::treasure_first), unless the build already has one.
@@ -179,11 +199,11 @@ impl Bot {
         // its emblem.
         let mut stat = self.chosen_stat.unwrap_or(0) as u32 * 2;
         if let Some(build) = self.build.filter(|b| !b.is_empty()) {
-            let mut owned = [0u32; 42];
+            let mut owned = [0u32; ITEM_KINDS];
             for (item, count) in me.item_count()?.iter() {
                 owned[item as usize] = count;
             }
-            let mut wanted = [0u32; 42];
+            let mut wanted = [0u32; ITEM_KINDS];
             for i in 0..64 {
                 let shard = build[i.min(build.len() - 1)];
                 let Some(emblem) = shard.result()? else {
@@ -220,12 +240,12 @@ impl Bot {
             }
             return Ok(());
         }
-        let mut owned = [0u32; 42];
+        let mut owned = [0u32; ITEM_KINDS];
         for (item, count) in me.item_count()?.iter() {
             owned[item as usize] = count;
         }
-        let mut wanted = [0u32; 42]; // emblems the build calls for up to the current entry
-                                     // BUILD_ALTERNATE_TAIL: a list ending in two different Bruiser emblems cycles them.
+        let mut wanted = [0u32; ITEM_KINDS]; // emblems the build calls for up to the current entry
+                                             // BUILD_ALTERNATE_TAIL: a list ending in two different Bruiser emblems cycles them.
         let n = build.len();
         let cycle = BUILD_ALTERNATE_TAIL
             && n >= 2
@@ -397,12 +417,15 @@ impl Bot {
             return Ok(());
         }
         if me.is_recalling()? {
-            let cancel =
+            let mut cancel =
                 if CANCEL_GO_HOME_RECALL && self.recall_reason == Some(RecallReason::GoHome) {
                     cancel_recall_for()?
                 } else {
                     None
                 };
+            if cancel.is_none() && RECALL_YIELD {
+                cancel = recall_yield(self.recall_reason)?;
+            }
             match cancel {
                 Some(why) if me.cancel_recall().is_ok() => {
                     common::trace(why);
@@ -493,6 +516,13 @@ impl Bot {
         common::checkpoint("turn-low-hp-check");
         if low_hp {
             let _ = common::rally::drop_out();
+            // REWARD_BEFORE_LOW_HP: a safe reward close by first.
+            if collect::REWARD_BEFORE_LOW_HP
+                && collect::grab_reward(collect::REWARD_YIELD_TILES, false)?
+            {
+                common::trace("low-hp-reward-first");
+                return Ok(());
+            }
             common::trace("low-hp");
             let result = safety::retreat_and_recall();
             if me.is_recalling().unwrap_or(false) {
@@ -601,10 +631,42 @@ impl Bot {
             // After calling a rally, act last next round to see every answer (rally::RALLY_AVAIL).
             .set_priority(if common::rally::awaiting_replies() {
                 0
+            } else if STRENGTH_ORDER {
+                strength_priority()
             } else {
                 1 + crate::random_number(100) as i32
             })
     }
+}
+
+// v9 (2026-10-26, the user: recalls couldn't be called off): a recall in progress (either kind) is
+// cancelled for a safe reward close by (collect::grab_reward), or an enemy close enough to fight
+// (run or fight rather than stand in the channel, which a hit breaks anyway); a go-home recall also
+// for a rally we said yes to on foot. Off: CANCEL_GO_HOME_RECALL's reasons only.
+// 2026-10-26 (SDK 4.0, 70 maps), 140 games against bot-v8 with a same-seed control (72/140, gold
+// 0.97x, deaths 12.0 a game, 1.2 of them to camps): with REWARD_BEFORE_LOW_HP 68/140 (+29/-33),
+// deaths to champions 11.7 against 10.8 (the enemy cancel), gold -3%. Off.
+const RECALL_YIELD: bool = false;
+// Whether an enemy close enough to fight cancels it too (RECALL_YIELD). Off: rewards and rallies only.
+// 2026-10-26, without the enemy cancel (140 games against bot-v8, with DEAD_CAMP_MEMORY, control
+// 72/140): with REWARD_BEFORE_LOW_HP 71/140 (+14/-15), gold -3.6%, fuel-exhausted turns +16%;
+// alone 63/140 (+17/-26), deaths to champions 11.8 against 11.1. RECALL_YIELD stays off.
+const RECALL_YIELD_ENEMY: bool = true;
+
+fn recall_yield(reason: Option<RecallReason>) -> Result<Option<&'static str>> {
+    if collect::grab_reward(collect::REWARD_YIELD_TILES, true)? {
+        return Ok(Some("recall-yield-reward"));
+    }
+    if RECALL_YIELD_ENEMY && !common::fightable_enemies()?.is_empty() {
+        return Ok(Some("recall-yield-enemy"));
+    }
+    if reason != Some(RecallReason::LowHealth)
+        && common::rally::going()?
+        && !common::rally::wants_recall()?
+    {
+        return Ok(Some("recall-yield-rally"));
+    }
+    Ok(None)
 }
 
 // What, if anything, outranks the go-home recall we're channelling (see CANCEL_GO_HOME_RECALL).

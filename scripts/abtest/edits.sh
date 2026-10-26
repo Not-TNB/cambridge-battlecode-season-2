@@ -149,3 +149,16 @@ BALT='bot.rs=s/^pub const BUILD_ALTERNATE_TAIL: bool = false;/pub const BUILD_AL
 DET6='common/farm.rs=s/^pub const RATE_DETOUR_STEPS: i32 = 0;/pub const RATE_DETOUR_STEPS: i32 = 6;/'
 DET12='common/farm.rs=s/^pub const RATE_DETOUR_STEPS: i32 = 0;/pub const RATE_DETOUR_STEPS: i32 = 12;/'
 ASHARE='common/farm.rs=s/^pub const RATE_ALLY_SHARE: bool = false;/pub const RATE_ALLY_SHARE: bool = true;/'
+RSKIP='common/farm.rs=s/^pub const RATE_SKIP_UNWINNABLE: bool = false;/pub const RATE_SKIP_UNWINNABLE: bool = true;/'
+RPRE='common/farm.rs=s/^pub const RATE_PRECALL: bool = false;/pub const RATE_PRECALL: bool = true;/'
+# bot-v9 strength turn order and judging rallies by their responders
+SORDER='bot.rs=s/^pub const STRENGTH_ORDER: bool = false;/pub const STRENGTH_ORDER: bool = true;/'
+RJUDGE='common/rally.rs=s/^pub const RALLY_JUDGE_RESPONDERS: bool = false;/pub const RALLY_JUDGE_RESPONDERS: bool = true;/'
+# bot-v9 2026-10-26 ladder-observation fixes
+SSTICK='common/farm.rs=s/^pub const RALLY_SIDE_STICKY: bool = false;/pub const RALLY_SIDE_STICKY: bool = true;/'
+DEADMEM='common/collect.rs=s/^pub const DEAD_CAMP_MEMORY: bool = false;/pub const DEAD_CAMP_MEMORY: bool = true;/'
+UNCOMMIT='common/rally.rs=s/^pub const RALLY_END_UNCOMMIT: bool = false;/pub const RALLY_END_UNCOMMIT: bool = true;/'
+THREATMEM='common/threats.rs=s/^pub const CAMP_THREAT_MEMORY: bool = false;/pub const CAMP_THREAT_MEMORY: bool = true;/'
+RYIELD='bot.rs=s/^const RECALL_YIELD: bool = false;/const RECALL_YIELD: bool = true;/'
+RLOWHP='common/collect.rs=s/^pub const REWARD_BEFORE_LOW_HP: bool = false;/pub const REWARD_BEFORE_LOW_HP: bool = true;/'
+RYNOENEMY='bot.rs=s/^const RECALL_YIELD_ENEMY: bool = true;/const RECALL_YIELD_ENEMY: bool = false;/'

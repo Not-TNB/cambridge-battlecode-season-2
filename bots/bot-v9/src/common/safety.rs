@@ -401,12 +401,17 @@ pub fn low_hp_recall() -> Result<bool> {
     // v9 (2026-10-25): above the threshold with no camp within MAX_CAMP_RANGE, nothing below can
     // make us leave (no camp hitting us, none of a group we fled): skip the enemy and body scans
     // (~4k fuel every turn).
+    // CAMP_THREAT_MEMORY: awake camps seen lately but out of sight now.
+    let remembered = super::threats::remembered_camps(&sight);
     if !low {
         let here = me.position()?;
         if sight
             .camps
             .iter()
             .all(|c| distance(c.spawn_position(), here) > MAX_CAMP_RANGE)
+            && remembered
+                .iter()
+                .all(|&(t, range, _)| distance(t, here) > range)
         {
             return Ok(false);
         }
@@ -460,6 +465,13 @@ pub fn low_hp_recall() -> Result<bool> {
                 }
                 fled_in_range |= fled(index);
             }
+        }
+    }
+    for &(tile, range, damage) in &remembered {
+        let gap = distance(tile, here);
+        if gap <= range {
+            per_round += damage;
+            escape_steps = escape_steps.max(range + 1 - gap);
         }
     }
     let hits = if ESCAPE_AWARE_RECALL {

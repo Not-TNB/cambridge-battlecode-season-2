@@ -323,6 +323,14 @@ fn state() -> Result<(Option<usize>, bool)> {
     }
     let help = active.is_some() && byte & HELP_FLAG != 0;
     ACTIVE.with(|a| a.set(Some((round, active, help))));
+    // RALLY_END_UNCOMMIT: the rally we last saw has ended: its fight is judged afresh.
+    if RALLY_END_UNCOMMIT {
+        if let Some(g) = LAST_RALLY.with(|l| l.replace(active)) {
+            if active != Some(g) {
+                super::collect::uncommit(g);
+            }
+        }
+    }
     Ok((active, help))
 }
 
@@ -809,6 +817,21 @@ fn check_replies(index: usize, called: u32, round: u32) -> Result<()> {
     let need = u32::from(joined >> NEED_SHIFT).max(1);
     let yes = (joined & 0x1f).count_ones().saturating_sub(1); // without us
     if yes >= need {
+        // RALLY_JUDGE_RESPONDERS: the allies who actually said yes, not stand-ins.
+        if RALLY_JUDGE_RESPONDERS {
+            let ours = slot_of(super::me()?.champion_name()?);
+            let team: Vec<cambc::ChampionType> = crate::opening::team()
+                .iter()
+                .enumerate()
+                .filter(|&(s, _)| s < 5 && Some(s) != ours && joined & (1 << s) != 0)
+                .map(|(_, &c)| c)
+                .collect();
+            if !super::collect::winnable_with_team(index, &team)? {
+                log("weak-helpers", index);
+                super::trace::trace("rally-weak-helpers");
+                return cancel_and_skip(index, round);
+            }
+        }
         OUR_RALLY.with(|o| o.set(None)); // answered: it runs its course
         return refresh(index);
     }
@@ -1013,6 +1036,26 @@ pub fn log_turn() {
 // game against 36, deaths 10.8 against 11.5, fuel -4%; gold and big captures unchanged. 3, with
 // RALLY_MAX_ROUNDS 40 (31 rallies sat out the 80-round cap).
 pub const RALLY_HANDSHAKE: u8 = 3;
+// v9 (2026-10-26, the user's idea): once enough allies said yes, the caller judges the fight with
+// those allies (collect::winnable_with_team) instead of the weakest-teammate stand-ins it sized the
+// rally with, and calls it off if they're too weak. With bot::STRENGTH_ORDER the strongest free
+// allies answer first. Off: the replies' count decides.
+// 2026-10-26 (SDK 4.0, 70-map pool), 140 games against bot-v8 with a same-seed control (71/140):
+// 71/140 (+13/-13), rallies cancelled 73% against 65%, cleared 14% against 19%, turns on rallies
+// 143 a game against 172, fuel-exhausted turns -5%, gold ratio 0.92 against 0.95. Neutral. Off.
+pub const RALLY_JUDGE_RESPONDERS: bool = false;
+// v9 (2026-10-26, the user saw champions keep fighting a group they couldn't win alone): a hit
+// commits us to a group's fight (collect::CAMP_COMMIT_ROUNDS, renewed every hit), so when a rally
+// was called off mid-fight (a helper dropped out, the caller left) we fought on alone. On: when the
+// rally we saw ends, our commitment to its group is dropped and the fight judged again. Off: kept.
+// 2026-10-26 (SDK 4.0, 70 maps), 140 games against bot-v8 with a same-seed control (72/140, gold
+// 0.97x, deaths 12.0 a game, 1.2 of them to camps): with RALLY_SIDE_STICKY 69/140, see there. Off.
+pub const RALLY_END_UNCOMMIT: bool = false;
+
+thread_local! {
+    // RALLY_END_UNCOMMIT: the rally group in our last reading.
+    static LAST_RALLY: Cell<Option<usize>> = const { Cell::new(None) };
+}
 const DROP_FLAG: u8 = 0x40;
 const REPOSTS: u32 = 1;
 const HEARTBEAT_ROUNDS: u32 = 6;

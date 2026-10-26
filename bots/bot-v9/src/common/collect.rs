@@ -1014,6 +1014,9 @@ fn group_camps(ctx: &FightContext, index: usize) -> Result<Vec<(Vec2, f32, f32, 
             .iter()
             .find(|c| c.spawn_position() == member.spawn_position())
         {
+            if DEAD_CAMP_MEMORY {
+                forget_dead(member.spawn_position());
+            }
             let (_, strength, range) =
                 super::trace::metered("gc-stats", || camp_stats(member.kind(), Some(c), member))?;
             let health = super::trace::metered("gc-health", || c.health())?;
@@ -1021,13 +1024,61 @@ fn group_camps(ctx: &FightContext, index: usize) -> Result<Vec<(Vec2, f32, f32, 
         } else if !super::trace::metered("gc-visible", || {
             ctx.sight.visible.is_set(member.spawn_position())
         })? {
+            // DEAD_CAMP_MEMORY: one we saw dead lately is still dead (the group respawns as one).
+            if DEAD_CAMP_MEMORY && seen_dead(member.spawn_position(), ctx.round) {
+                continue;
+            }
             let same_kind = live.iter().find(|c| c.kind() == member.kind()).copied();
             let (max_health, strength, range) =
                 super::trace::metered("gc-stats", || camp_stats(member.kind(), same_kind, member))?;
             camps.push((member.spawn_position(), max_health, strength, range));
+        } else if DEAD_CAMP_MEMORY {
+            note_dead(member.spawn_position(), ctx.round);
         }
     }
     Ok(camps)
+}
+
+// v9 (2026-10-26, the user: champions seemed too scared to clear camps): a group's members out of
+// sight counted as alive at full health in the camp fight, even ones we had just seen die (a step
+// back, or a bush between). On: a member seen dead within DEAD_MEMORY_ROUNDS stays dead (a group
+// respawns only as a whole, at least 45 rounds after its last camp died: the capture plus the
+// shortest respawn timer). Off: unseen members alive.
+// 2026-10-26 (SDK 4.0, 70 maps), 140 games against bot-v8 with a same-seed control (72/140, gold
+// 0.97x, deaths 12.0 a game, 1.2 of them to camps): 72/140 (+19/-19), clears 66.8 a game
+// against 65.0, gold +2.5%, gems submitted 737 against 726, fuel-exhausted turns -12%. On.
+pub const DEAD_CAMP_MEMORY: bool = true;
+const DEAD_MEMORY_ROUNDS: u32 = 40;
+
+thread_local! {
+    static SEEN_DEAD: std::cell::RefCell<Vec<(Vec2, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_dead(tile: Vec2, round: u32) {
+    SEEN_DEAD.with(|s| {
+        let mut s = s.borrow_mut();
+        match s.iter_mut().find(|e| e.0 == tile) {
+            Some(e) => e.1 = round,
+            None => s.push((tile, round)),
+        }
+    });
+}
+
+fn forget_dead(tile: Vec2) {
+    SEEN_DEAD.with(|s| s.borrow_mut().retain(|e| e.0 != tile));
+}
+
+fn seen_dead(tile: Vec2, round: u32) -> bool {
+    SEEN_DEAD.with(|s| {
+        s.borrow()
+            .iter()
+            .any(|&(t, r)| t == tile && round < r + DEAD_MEMORY_ROUNDS)
+    })
+}
+
+// rally::RALLY_END_UNCOMMIT: a rally on group `index` ended; judge its fight afresh.
+pub fn uncommit(index: usize) {
+    ENGAGED.with(|e| e.borrow_mut().retain(|&(g, _)| g != index));
 }
 
 // The camp fight itself (see judge): whether we and the allies in support range clear `camps`
@@ -1441,6 +1492,40 @@ pub fn winnable_with_standins(index: usize, extra: usize) -> Result<bool> {
     })
 }
 
+// Whether we'd win group `index`'s fight with exactly the allies in `team` (rally::
+// RALLY_JUDGE_RESPONDERS: the ones who said yes): those in sight as they are, the rest at full
+// health beside the group with their last seen stats (a copy of us if never seen).
+pub fn winnable_with_team(index: usize, team: &[cambc::ChampionType]) -> Result<bool> {
+    camp_fight_winnable(index)?; // builds this turn's context
+    CONTEXT.with(|c| {
+        let c = c.borrow();
+        let ctx = c.as_ref().expect("built above");
+        let camps = group_camps(ctx, index)?;
+        let Some(&(at, ..)) = camps.first() else {
+            return Ok(false);
+        };
+        let full = ctx.floor / CAMP_FIGHT_HP_FLOOR;
+        let mut helpers = Vec::with_capacity(team.len());
+        for &name in team {
+            if let Some(i) = ctx.in_sight.iter().position(|&n| n == name) {
+                helpers.push(ctx.helpers[i]);
+                continue;
+            }
+            let (range, damage, max_health) = TEAMMATES
+                .with(|t| t.borrow().iter().find(|(n, _)| *n == name).map(|&(_, s)| s))
+                .unwrap_or((ctx.range, ctx.outgoing, full));
+            helpers.push((
+                at,
+                range,
+                damage,
+                max_health,
+                CAMP_FIGHT_HP_FLOOR * max_health,
+            ));
+        }
+        fight_winnable(ctx, camps, &helpers, fight_share(index)?)
+    })
+}
+
 // Whether we alone, at full health and standing next to it, would clear all of group `index` at
 // full health: whether we're strong enough to farm without the team (opening.rs).
 pub fn could_solo(index: usize) -> Result<bool> {
@@ -1474,7 +1559,26 @@ pub const CAPTURE_HOLD: bool = true;
 pub const REWARD_BEFORE_RECALL_TILES: i32 = 0;
 
 pub fn grab_reward_before_recall() -> Result<bool> {
-    if REWARD_BEFORE_RECALL_TILES <= 0 {
+    let tiles = if REWARD_BEFORE_LOW_HP {
+        REWARD_BEFORE_RECALL_TILES.max(REWARD_YIELD_TILES)
+    } else {
+        REWARD_BEFORE_RECALL_TILES
+    };
+    grab_reward(tiles, false)
+}
+
+// v9 (2026-10-26, the user): a safe reward close by (no enemy in sight, no awake camp hitting us)
+// comes before the low-health recall too, and cancels a recall in progress (bot::RECALL_YIELD).
+// Off: before going home only (REWARD_BEFORE_RECALL_TILES, 0 = never).
+// 2026-10-26 (SDK 4.0, 70 maps), 140 games against bot-v8 with a same-seed control (72/140, gold
+// 0.97x, deaths 12.0 a game, 1.2 of them to camps): with RECALL_YIELD 68/140, see bot.rs. Off.
+pub const REWARD_BEFORE_LOW_HP: bool = false;
+pub const REWARD_YIELD_TILES: i32 = 3;
+
+// A safe reward within `tiles` (see grab_reward_before_recall): step to it or hold it, unless `dry`
+// (then only whether there is one). Returns whether there is (and, not dry, the turn was used).
+pub fn grab_reward(tiles: i32, dry: bool) -> Result<bool> {
+    if tiles <= 0 {
         return Ok(false);
     }
     let me = me()?;
@@ -1496,7 +1600,7 @@ pub fn grab_reward_before_recall() -> Result<bool> {
         let near = group
             .camps()
             .iter()
-            .any(|c| distance(c.spawn_position(), here) <= REWARD_BEFORE_RECALL_TILES);
+            .any(|c| distance(c.spawn_position(), here) <= tiles);
         let seen = group
             .camps()
             .iter()
@@ -1514,6 +1618,9 @@ pub fn grab_reward_before_recall() -> Result<bool> {
             || super::camps::ally_on_group(group, false)?
         {
             continue;
+        }
+        if dry {
+            return Ok(true);
         }
         if group.camps().iter().any(|c| c.spawn_position() == here) {
             super::trace::trace("grab-reward-hold");

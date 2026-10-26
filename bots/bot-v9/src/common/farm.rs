@@ -581,6 +581,19 @@ const RATE_WALK_CHECK: usize = 3;
 // at is cheap and a lone trip to one stays dear.
 pub const RATE_DETOUR_STEPS: i32 = 6;
 pub const RATE_ALLY_SHARE: bool = true;
+// v9 (2026-10-26): of 3,769 big-group targets in 40 traced games (BIG_DIAG), 26% ended "camp fight
+// unwinnable", half of them once we'd walked there. RATE_SKIP_UNWINNABLE: a group whose hits would
+// take more than RATE_SOLO_HURT of our health (shared with the allies beside it) isn't picked.
+// RATE_PRECALL (the user's rally-ahead idea): such a group that 1-RALLY_MAX_HELPERS more allies would
+// make safe, worth more with them (counting PRECALL_ARRIVE_ROUNDS for them to come) than the best
+// group we can take now, gets a rally called at once, and we head there. Off: picked as any group.
+// 2026-10-26, 120 games each against bot-v8 with a same-seed control (64/120): skip 56/120
+// (+19/-27), gold -6%; skip + precall 52/120 (+20/-32), gold -8%; 20+ gem captures unchanged
+// (6.1-6.2 after round 1000 against 6.1). Both off.
+pub const RATE_SKIP_UNWINNABLE: bool = false;
+pub const RATE_PRECALL: bool = false;
+const RATE_SOLO_HURT: f32 = 0.8;
+const PRECALL_ARRIVE_ROUNDS: f32 = 10.0;
 const RATE_ALLY_TILES: i32 = 4;
 // With RATE_TARGETS, groups worth RESPAWN_WAIT_MIN_GEMS gems or more that respawn within
 // RESPAWN_WAIT_MAX_ROUNDS rounds, within RESPAWN_WAIT_TILES of us (the nearest RESPAWN_WAIT_GROUPS),
@@ -699,6 +712,8 @@ fn pick_by_rate(
     };
     // (rate on the straight line, value, cost, wait, group)
     let mut scored: Vec<(f32, f32, f32, i32, usize)> = Vec::with_capacity(candidates.len());
+    // RATE_PRECALL: the best group we'd need helpers for: (rate with them, group, helpers).
+    let mut precall: Option<(f32, usize, usize)> = None;
     for &(g, back) in &candidates {
         let info = &statics.groups[g];
         let gap = (distance(info.centre, here) - info.radius).max(0);
@@ -714,6 +729,21 @@ fn pick_by_rate(
                 .iter()
                 .filter(|&&a| distance(a, info.centre) <= info.radius + RATE_ALLY_TILES)
                 .count() as f32;
+        // The share of our health its hits would take with the fighters there.
+        let hurt = recover / RATE_RECOVER_ROUNDS / fighters;
+        if (RATE_SKIP_UNWINNABLE || RATE_PRECALL) && hurt > RATE_SOLO_HURT && wait == 0 {
+            // RATE_PRECALL: with enough helpers (at most rally::RALLY_MAX_HELPERS more) it's safe;
+            // kept aside to compare with the best group we can take now.
+            let team = (fighters * hurt / RATE_SOLO_HURT).ceil();
+            if RATE_PRECALL && team - fighters <= super::rally::RALLY_MAX_HELPERS as f32 {
+                let cost = (clear + recover) / team + RATE_CAPTURE_ROUNDS + PRECALL_ARRIVE_ROUNDS;
+                let rate = value / (gap as f32 + cost).max(1.0);
+                if precall.is_none_or(|(r, _, _)| rate > r) {
+                    precall = Some((rate, g, (team - fighters) as usize));
+                }
+            }
+            continue;
+        }
         let cost = (clear + recover) / fighters + RATE_CAPTURE_ROUNDS;
         scored.push((
             value / (gap.max(wait) as f32 + cost).max(1.0),
@@ -752,6 +782,24 @@ fn pick_by_rate(
         };
         if best.as_ref().is_none_or(|(r, _)| rate > *r) {
             best = Some((rate, own));
+        }
+    }
+    // RATE_PRECALL: a rally for a big group beats anything we can take now: call it and head there.
+    if let Some((rate, g, helpers)) = precall {
+        let solo = best.as_ref().map_or(0.0, |(r, _)| *r);
+        let own = tiles_of(g);
+        if rate > solo
+            && !own.is_empty()
+            && super::rally::active().ok()?.is_none()
+            && super::rally::worth_checking(g, round)
+            && super::rally::can_staff(helpers.max(1)).unwrap_or(false)
+            && !super::collect::follow_only().unwrap_or(true)
+        {
+            super::trace::trace("rally-precall");
+            super::rally::log("precall", g);
+            super::rally::call(g).ok()?;
+            super::rally::set_need(helpers.max(1)).ok()?;
+            return Some(own);
         }
     }
     best.map(|(_, own)| own)
@@ -1136,6 +1184,20 @@ const RALLY_GO_TILES: i32 = 8;
 // games, 745 waiting turns with a live camp within 8 tiles). Checked afresh every plan. 0: off.
 pub const RALLY_SIDE_STEPS: i32 = 8;
 const RALLY_AT_STEPS: i32 = 2;
+// v9 (2026-10-26, the user saw champions step back and forth at rallies): "at the rally" is within
+// RALLY_AT_STEPS, the side camp up to RALLY_SIDE_STEPS away, so the first step towards it left the
+// rally, the plan went back to the rally, and the next step back made it a side camp again (near/far
+// flips on 3.4% of rally turns). On: the side group we went for stays the goal until it isn't
+// available, the fight at the rally starts, or the rally ends. Off: chosen afresh at the rally.
+// 2026-10-26 (SDK 4.0, 70 maps), 140 games against bot-v8 with a same-seed control (72/140, gold
+// 0.97x, deaths 12.0 a game, 1.2 of them to camps): with RALLY_END_UNCOMMIT 69/140
+// (+18/-21), gold ratio 0.94, fuel-exhausted turns +9%. Off.
+pub const RALLY_SIDE_STICKY: bool = false;
+
+thread_local! {
+    // RALLY_SIDE_STICKY: (rally group, side group) we went for.
+    static SIDE_KEEP: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+}
 
 thread_local! {
     // (rally group, round the decision expires, whether we join)
@@ -2460,7 +2522,28 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                 break;
             }
         }
-        if at_rally && !fight_on {
+        // RALLY_SIDE_STICKY: the side group we went for stays the goal while it lasts.
+        let kept = if RALLY_SIDE_STICKY && !fight_on {
+            SIDE_KEEP.with(|k| k.get()).filter(|&(r, g)| {
+                Some(r) == rally_now && available.get(g).copied().unwrap_or(false)
+            })
+        } else {
+            None
+        };
+        if let Some((_, g)) = kept {
+            let mut side = Bitboard::new()?;
+            for camp in groups[g].camps() {
+                let tile = camp.spawn_position();
+                if !not_goals.contains(&tile) {
+                    side.set(tile, true)?;
+                }
+            }
+            if !side.is_empty()? {
+                super::trace::trace("rally-side-kept");
+                rally_side = Some(side);
+            }
+        }
+        if rally_side.is_none() && at_rally && !fight_on {
             let mut side = Bitboard::new()?;
             for (index, group) in groups.iter().enumerate() {
                 let info = &statics.groups[index];
@@ -2480,14 +2563,22 @@ pub fn farm_plan() -> Result<std::rc::Rc<FarmPlan>> {
                 }
             }
             let tiles = side.positions()?;
-            if steps
-                .nearest(&tiles)
-                .is_some_and(|t| steps.steps(t) <= RALLY_SIDE_STEPS)
-            {
+            let nearest = steps.nearest(&tiles);
+            if nearest.is_some_and(|t| steps.steps(t) <= RALLY_SIDE_STEPS) {
                 super::trace::trace("rally-side-camp");
                 rally_side = Some(side);
+                if let (true, Some(r), Some(g)) = (
+                    RALLY_SIDE_STICKY,
+                    rally_now,
+                    nearest.and_then(|t| group_at(t).ok().flatten()),
+                ) {
+                    SIDE_KEEP.with(|k| k.set(Some((r, g))));
+                }
             }
         }
+    }
+    if rally_side.is_none() {
+        SIDE_KEEP.with(|k| k.set(None));
     }
     // A rally that already has the allies it needs (rally::RALLY_CAP) isn't ours to join.
     let rally_full = !rally_tiles.is_empty() && super::rally::full()?;

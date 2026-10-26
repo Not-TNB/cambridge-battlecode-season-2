@@ -111,6 +111,10 @@ pub struct Bot {
     last_turn_hp: Option<f32>, // health at our last turn's start (safety::HIDDEN_ATTACKER)
 }
 
+// Room for every item id: SDK 4.0 has 84 items (it was 42). A fixed 42 indexed past its end on
+// the new items and panicked every turn on the platform (2026-10-26).
+const ITEM_KINDS: usize = 128;
+
 // The Treasure shard of the same stat as `shard` (each family lists Strength, Focus, Health as
 // shard/emblem pairs, so the stat is the item's index mod 6).
 fn treasure_shard(shard: Item) -> Item {
@@ -170,11 +174,11 @@ impl Bot {
         // its emblem.
         let mut stat = self.chosen_stat.unwrap_or(0) as u32 * 2;
         if let Some(build) = self.build.filter(|b| !b.is_empty()) {
-            let mut owned = [0u32; 42];
+            let mut owned = [0u32; ITEM_KINDS];
             for (item, count) in me.item_count()?.iter() {
                 owned[item as usize] = count;
             }
-            let mut wanted = [0u32; 42];
+            let mut wanted = [0u32; ITEM_KINDS];
             for i in 0..64 {
                 let shard = build[i.min(build.len() - 1)];
                 let Some(emblem) = shard.result()? else {
@@ -211,11 +215,11 @@ impl Bot {
             }
             return Ok(());
         }
-        let mut owned = [0u32; 42];
+        let mut owned = [0u32; ITEM_KINDS];
         for (item, count) in me.item_count()?.iter() {
             owned[item as usize] = count;
         }
-        let mut wanted = [0u32; 42]; // emblems the build calls for up to the current entry
+        let mut wanted = [0u32; ITEM_KINDS]; // emblems the build calls for up to the current entry
         for i in 0..64 {
             let shard = build[i.min(build.len() - 1)];
             let Some(emblem) = shard.result()? else {
