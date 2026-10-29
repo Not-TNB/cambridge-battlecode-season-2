@@ -1108,11 +1108,83 @@ Each was off by default and lost (or did nothing) when tested; the code is gone 
 
 ---
 
+## 48. bot-v10: a new bot from scratch with map-type playstyles (2026-10-29)
+**Commit:** Uncommitted (`bots/bot-v10`)
+
+- **What it is:** a rewrite, not a copy of v9 (only `alloc.rs` is reused). One binary; the draft classifies the map and picks one of three playstyles, each a parameter set + draft list + build in `profile.rs`, all running the same brain.
+
+  | File | What lives there |
+  |---|---|
+  | `draft.rs`, `classify.rs` | Map features → `Farm` / `Fight` / `Gem`; picks; draft memory `[0xA7, kind, n, vantage x,y …]` |
+  | `profile.rs` | Per-playstyle numbers (fight margin, retreat/heal health, bank gems, trip gold, gem round), picks, builds |
+  | `mapinfo.rs` | Static map: packed walkability bits, camp groups, one whole-map distance field per group (built lazily from spare fuel, kept forever), home/enemy/altar fields |
+  | `nav.rs` | Step down a field; dash across holes, travel dash only when no hole crossing is due within a cooldown |
+  | `memory.rs`, `team.rs` | Group states seen; shared memory: claim per slot (255 = dead), fight beacon in bytes 6–7 |
+  | `combat.rs` | Per-unit damage/health summary, death-by-death team-fight simulation, targeting, casting |
+  | `brain.rs` | The turn: dead/channel → shop → altar lock → fight/back off/flee → heal → shop trip → beacon → bank → camp → explore; target/action kept between turns |
+  | `shop.rs` | Emblem order per playstyle, then Power shards |
+
+- **Map classifier** (scale-free features: gem share, contested share, top group share, spawn gap). Agrees with 9 of the 10 hand labels; `00breadcrumbs` comes out Gem (87% gems). Fight: spawns ≤12 steps apart, or one contested group with ≥25% of the value. Gem: ≥85% gems. Else Farm. Monolith/golem groups are left out of the shares.
+
+- **SDK 4.0 facts found on the way** (each broke v10 at some point):
+  - `Bitboard::export_linear_buffer_into` is **bit-packed** (row-major, LSB-first); `DistanceField`'s export is one u16 per tile.
+  - A native loop over every tile of a 100×100 map costs ~50–60k fuel; one whole-map flood with export ~49k.
+  - `CampGroup::state()` re-queries the whole vision mask per call; `vision::camps()` lists living camps only, so a dead group never shows in it.
+  - A full `Unit` snapshot of a champion costs ~4.7k fuel (abilities and buffs re-read each call): allies now get a 5-query light snapshot and ability tables are cached per champion type (`sense` 37k → ~20k).
+  - Local runner must be cambc 4.0.0 (3.0.5 has no Tribute…Collectors emblems or Heart of Ruin). bot-v2/v4/v6/v7 don't run on 4.0 (they score 0); bot-v6 is useful as an idle opponent.
+  - Emblem passive magnitudes: Monster .1, Durability .1, Treasure .2, Jungle .3, Home .5, Tribute .33, Capture 3, Prospector .25, Hunter 50, Skirmish .05, Collectors .01; Greed = 25 shards, 35 stat points, no passive.
+
+- **Solo farming benchmark** (v10 against the idle bot-v6, 8 maps × 2 sides): measures farming with no interference, so small changes show without fight noise.
+
+  | | Gold r100 | Gold r300 | Gold r500 | Gems (2000 rounds max) |
+  |---|---|---|---|---|
+  | First working v10 | 186 | 754 | 1,441 | 690 |
+  | Final v10 | 267 | 873 | 1,600 | 908 |
+  | v9 | 314 | 951 | 1,723 | 941 |
+
+- **What moved farming** (solo benchmark unless noted):
+  - **Nearest-camp farming, gold first until round 150** (from v9's entry 20) instead of value-per-turn scoring: gold r100 89 → 142 vs v9.
+  - **Pile onto camps that hit back; spread only on harmless clusters.** A v9 trace showed it clears each camp as a pack: the camp dies 3× faster and deals a third of the damage. Gold r500 1,440 → 1,735.
+  - **Never wait on a respawning group's spawn tiles** (an occupied tile holds the whole group's respawn): famine side A 379 → 986 gems.
+  - **Visible asleep camps aren't threats** (camps wake only when damaged): one champion had spent 600 rounds unable to recall or step home.
+  - **Leave a camp's range before heading home** (escape weighted above home distance): repeated deaths on the same tile next to an elk stopped.
+  - **No-progress watchdog** (goal distance not improving for 10 rounds → give that goal up): fixed groups only a longer dash reaches and altars whose only tile is a living camp. It must not fire at distance ≤ 3, or it locks out every group we stand next to.
+  - **Break off a camp only if what it deals over its remaining clear time (≤3 turns) would take us under the retreat line**, not 3 turns flat: champions stopped leaving half-dead elk for 90-round trips home (solo gems 896 → 945).
+  - **Capture funnel to one carry** (v9's idea): 0 → 5/32 wins vs v9 together with in-range targeting.
+  - **Tried and dropped:** whole-team parties (leader-following) −40% gold; 12-step spread penalty (fields/breadcrumbs worse); fewer trips home (trip gold 300, heal at 30%, bank at 30) roughly neutral, kept.
+
+- **What moved fighting** (vs v9, 16 maps × 2 sides unless noted):
+  - **Death-by-death fight simulation** (v9's event model, enemy damage weighted ×1.3) replacing a damage×health ratio.
+  - **Back off before contact; trade back when a melee enemy is already on us.** Fleeing at equal speed only hands a chaser free hits; holding exactly outside reach got us caught on the next corner.
+  - **Ghost enemies** (seen in the last 3 rounds stay in the fight picture) and a 20-round lockout of the camp we fled from: deaths 47 → 32 on 4 traced maps. Before, champions walked straight back into chasers hidden in bushes.
+  - **Ranged champions don't chase what they can't shoot**: v9 holds just outside our range when it thinks it's losing, and our ranged champions spent whole fights stepping in and never firing.
+  - **Walk-excluding abilities are cast before moving** (stuns, nukes, area hits, range 4): before, they were tried after the step and never fired (Ryth: 45 fight turns, 0 casts).
+  - **Fight beacon** answered by allies within 8 tiles at >70% health: kills 2.8 → 4.5, v9 deaths 3.2 → 5.3. Within 12 tiles: worse (allies arrive one at a time). Unrestricted, off-farm: gold roughly halved.
+  - **Tried and dropped:** kiting melee enemies (only works if the step escapes the enemy's reach), the v9-style close engage rule (fights against itemised enemies we then fled), braver thresholds (even trades, damage weight 1.0), stronger flee pull towards allies, health-first builds like v9's.
+
+- **Results now** (vs v9, 16 maps × 2 sides × 2 seeds = 64 games): **7/64 (11%)**. Wins on starvation 3/4, corridors 2/4, gold-rush 2/4.
+
+  | | v10 | v9 |
+  |---|---|---|
+  | Gold r100 / r300 / r500 | 202 / 619 / 1,012 | 271 / 976 / 1,746 |
+  | Gems | 275 | 920 |
+  | Kills / deaths | 4.6 / 9.1 | 7.9 / 5.3 |
+
+- **Open questions / follow-ups:**
+  - **Economy under pressure:** ~620 gold at r300 against v9 vs ~870 solo. v9's carry has ~600 gold by round 120 (every capture goes to it); ours makes ~260 per 100 rounds. Next: the carry walks to every finished camp while the others clear the next one nearby.
+  - **Deaths (~9 a game):** champions are still caught alone after backing off; v9's dashers close 2 tiles every 8 turns.
+  - **Gem rate:** even solo, v9 reaches 1,000 a few hundred rounds sooner on most maps.
+  - **Playstyles aren't specialised yet:** forcing the farm profile on fight maps scores the same as the fight profile; the gem profile loses `00breadcrumbs` badly. Still to build: contesting the centre, farming off enemy fights at camps, spreading for gems.
+  - **Not started:** a gate siege for `01boss-battle` (the only altar's only tile is a monolith; 0 or 1,144 gems solo depending on side), smarter warding, vantage-point scouting (computed in the draft, only used when idle).
+
+---
+
 ## Testing recipes
 
 - **vs starter on every map, both sides:** the `cambc run-batch` loop (writes a manifest to `replays/vs-starter/`, runs with `--jobs 8`, prints the win count). Change `OPP=` to test against another bot.
 - **vs an older version of our bot:** `git archive HEAD bots/my-bot | tar -x --strip-components=2 -C bots/my-bot-old`, then run against `bots/my-bot-old`.
 - **Fuel / timeouts:** see `docs/RustFuelPitfalls.md`.
+- **Solo farming benchmark:** `python3 -I tools/local/bench.py <bot> bot-v6 --maps ...`. bot-v6 doesn't run on SDK 4.0, so this measures farming alone, with no fight noise (entry 48).
 - **Matches are deterministic:** the same bots, map and sides always give the same result. Use more maps and both sides for a bigger sample. A refactor that leaves every result unchanged has not changed behaviour.
 
 ## Entry template
